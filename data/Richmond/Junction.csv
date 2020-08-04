@@ -1,0 +1,47 @@
+JUNCTION_ID;X_COORDINATE;Y_COORDINATE;Z_COORDINATE;Water Demand Base;Profile
+4;0;0;183;0;domestic
+9;0;0;68.85       ;0;domestic
+10;0;0;166.42      ;5.68        ;domestic
+42;0;0;60;3.68        ;domestic
+104;0;0;184;0;domestic
+164;0;0;65;0;domestic
+164b;0;0;65;0;domestic
+175;0;0;65;0;domestic
+186;0;0;112.18      ;0;domestic
+197;0;0;115;0;domestic
+206;0;0;134.99      ;0;domestic
+249;0;0;101;11.3        ;domestic
+264;0;0;184;0;domestic
+284;0;0;186;0;domestic
+312;0;0;242;2.13        ;domestic
+312b;0;0;242;0;domestic
+320;0;0;242;0;domestic
+321;0;0;242;0;domestic
+321b;0;0;242;0;domestic
+325;0;0;242;3.71        ;domestic
+353;0;0;185.78      ;0;domestic
+364;0;0;217;0;domestic
+632;0;0;69;0;domestic
+633;0;0;69;0;domestic
+634;0;0;139.02      ;0;domestic
+635;0;0;139.82      ;0;domestic
+636;0;0;139.82      ;0;domestic
+637;0;0;140;1;domestic
+701;0;0;198.33      ;.11         ;domestic
+729;0;0;202.15      ;0;domestic
+745;0;0;177;1.42        ;domestic
+753;0;0;177;.1          ;domestic
+766;0;0;69.7        ;0;domestic
+768;0;0;69.59       ;0;domestic
+770;0;0;69.39       ;0;domestic
+771;0;0;69;0;domestic
+112;0;0;184;0;domestic
+130;0;0;216.65      ;16.25       ;domestic
+196;0;0;70;0;domestic
+209;0;0;70;0;domestic
+125;0;0;186;0;domestic
+774;0;0;188;0;domestic
+201;0;0;69;0;domestic
+201b;0;0;69;0;domestic
+777;0;0;100;-9.16       ;constant
+ Reservoir_E;0;0;203.01;0;domestic

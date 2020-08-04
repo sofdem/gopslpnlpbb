@@ -1,0 +1,5 @@
+Valve_Set;Start Node;End Node;Type;Min Pressure Increase;Max_Pressure_Increase;Min Flow;Max Flow
+v1;201b;770;GV;-150;0;0;5.926
+v2;164b;197;GV;-130;0;0;58.094
+v3;312b;Tank D;GV;-0.5;0;0;9.701
+v4;321b;312;GV;-5;0;0;3.430
