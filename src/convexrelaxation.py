@@ -104,8 +104,8 @@ def build_model(inst: Instance, pumpvals={}):
 
     # CONVEXIFICATION OF HEAD-FLOW (PUMPS)
     for (i, j), pump in inst.pumps.items():
-        ##cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
-        cutbelow, cutabove = oa.pumpcutsgratien(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
+        cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
+        #cutbelow, cutabove = oa.pumpcutsgratien(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
         for t in inst.horizon():
             for n, c in enumerate(cutbelow):
                 LP.addConstr(hvar[j, t] - hvar[i, t] >= c[0] * qvar[(i, j), t]

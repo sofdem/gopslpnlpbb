@@ -205,7 +205,12 @@ def pumpcuts(qmin, qmax, coeff, pump, epsilon=EPSILON, drawgraph=False):
             q -= 2 * sqrt(epsilon / -coeff[2])
 
     # cutbelow = [[(quadval(qmax, coeff) - coeff[0]) / qmax, coeff[0]]]
-    cutbelow = [[coeff[1] + coeff[2] * qmax, coeff[0]]]
+    #cutbelow = [[coeff[1] + coeff[2] * qmax, coeff[0]]]
+    c0 = quadval(qmin, coeff)
+    c1 = (c0 - quadval(qmax, coeff)) / (qmin - qmax)
+    c0 -= c1*qmin
+    cutbelow = [[c1, c0]]
+
 
     if drawgraph:
         _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pump, 'PUMP')
