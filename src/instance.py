@@ -17,14 +17,14 @@ TARIFF_COLNAME = 'elix'
 def update_min(varmin, newmin):
         if newmin <= varmin:
             print(f'do not update min {varmin:.3f} to {newmin:.3f}')
-        else:
-            varmin = newmin
+            return varmin
+        return newmin
 
 def update_max(varmax, newmax):
         if newmax >= varmax:
             print(f'do not update max {varmax:.3f} to {newmax:.3f}')
-        else:
-            varmax = newmax
+            return varmax
+        return newmax
 
 
 class _Node:
@@ -115,8 +115,11 @@ class _Arc:
         self.qmax = qmax
 
     def update_qbounds(self, qmin, qmax):
-        update_min(self.qmin, qmin)
-        update_max(self.qmax, qmax)
+        self.qmin = update_min(self.qmin, qmin)
+        self.qmax = update_max(self.qmax, qmax)
+
+    def __str__(self):
+        return f'{self.id} [{self.qmin}, {self.qmax}]'
 
 
 class _Pipe(_Arc):
@@ -128,6 +131,9 @@ class _Pipe(_Arc):
     def __init__(self, id_, nodes, hloss, qmin, qmax):
         _Arc.__init__(self, id_, nodes, qmin, qmax)
         self.hloss = hloss
+
+    def __str__(self):
+        return f'P{self.id} [{self.qmin}, {self.qmax}] {self.hloss}'
 
 
 class _Valve(_Arc):
@@ -147,8 +153,11 @@ class _Valve(_Arc):
             raise NotImplementedError('pressure reducing valves are not yet supported')
 
     def update_hbounds(self, dhmin, dhmax):
-        update_min(self.dhlossmin, dhmin)
-        update_max(self.dhlossmax, dhmax)
+        self.hlossmin = update_min(self.hlossmin, dhmin)
+        self.hlossmax = update_max(self.hlossmax, dhmax)
+
+    def __str__(self):
+        return f'V{self.id} [{self.qmin}, {self.qmax}] {self.type} [{self.hlossmin}, {self.hlossmax}]'
 
 class _Pump(_Arc):
     """Network arc of type pump.
@@ -169,12 +178,15 @@ class _Pump(_Arc):
             raise NotImplementedError('variable speed pumps are not yet supported')
 
     def update_hbounds(self, dhmin, dhmax):
-        update_min(self.offdhmin, dhmin)
-        update_max(self.offdhmax, dhmax)
+        self.offdhmin = update_min(self.offdhmin, dhmin)
+        self.offdhmax = update_max(self.offdhmax, dhmax)
 
     def powerval(self, q):
         assert len(self.power) == 2
         return self.power[0] + self.power[1] * q if q else 0
+
+    def __str__(self):
+        return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hgain} {self.power} {self.type} [{self.offdhmin}, {self.offdhmax}]'
 
 
 class Instance:
@@ -449,8 +461,8 @@ class Instance:
         if self.name == 'Richmond':
             dep['p1 => p0'].add((('196', '768'), ('209', '766')))
             dep['p1 => p0'].add((('196', '768'), ('175', '186')))
-            dep['p1 => p0'].add((('312b', 'Tank D'), ('264', '112')))
-            dep['p1 => p0'].add((('264', '112'), ('312b', 'Tank D')))
+            dep['p1 => p0'].add((('312b', 'TD'), ('264', '112')))
+            dep['p1 => p0'].add((('264', '112'), ('312b', 'TD')))
 
             dep['p0 or p1'].add((('201b', '770'), ('196', '768')))
             dep['p0 or p1'].add((('321b', '312'), ('264', '112')))
@@ -460,3 +472,21 @@ class Instance:
             dep = None
 
         return dep
+
+    def tostr_basic(self):
+        return f'{self.name} {self.periods[0]} {self.horizon()}'
+    def tostr_network(self):
+        return f'{len(self.pumps)} pumps, {len(self.valves)} valves, {len(self.tanks)} tanks'
+
+    def print_all(self):
+        print(f'{self.tostr_basic()} {self.tostr_network()}')
+        print(f'{len(self.arcs)} arcs:')
+        for i, a in self.arcs.items():
+            print(i)
+            print(str(a))
+
+    def transcript_bounds(self, csvfile):
+        """Parse bounds in the hdf file."""
+        file = Path(Instance.BNDSDIR, self.name)
+        pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
+
