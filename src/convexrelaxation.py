@@ -58,31 +58,31 @@ def build_model(inst: Instance, pumpvals={}):
         for t in inst.horizon():
             # !!! original code: round(demand,2)
             LP.addConstr(gp.quicksum(qvar[a, t] for a in inst.inarcs(j))
-                         - gp.quicksum(qvar[a, t] for a in inst.outarcs(j)) == junc.demand(t))
+                         - gp.quicksum(qvar[a, t] for a in inst.outarcs(j)) == junc.demand(t), name=f'fc({j},{t})')
 
     # FLOW CONSERVATION (TANKS)
     for j, tank in inst.tanks.items():
         for t in inst.horizon():
             LP.addConstr(hvar[j, t+1] - hvar[j, t] == 3.6 * inst.tsinhours() / tank.surface *
                          (gp.quicksum(qvar[a, t] for a in inst.inarcs(j))
-                          - gp.quicksum(qvar[a, t] for a in inst.outarcs(j))))
+                          - gp.quicksum(qvar[a, t] for a in inst.outarcs(j))), name=f'fc({j},{t})')
 
     # MAX WITHDRAWAL AT RESERVOIRS
     for j, res in inst.reservoirs.items():
         if res.drawmax:
             LP.addConstr(3.6 * inst.tsinhours()
                          * gp.quicksum(qvar(a, t) for a in inst.outarc[j] for t in inst.horizon())
-                         <= res.drawmax)
+                         <= res.drawmax, name=f'w({j})')
 
     # VALVES
     for (i, j), valve in inst.valves.items():
         if valve.type == 'GV' or valve.type == 'PRV':
             for t in inst.horizon():
                 x = svar[(i, j), t] if (valve.type == 'GV') else (1 - svar[(i, j), t])
-                LP.addConstr(qvar[(i, j), t] <= valve.qmax * svar[(i, j), t])
-                LP.addConstr(qvar[(i, j), t] >= valve.qmin * x)
-                LP.addConstr(hvar[i, t] - hvar[j, t] >= valve.hlossmin * (1 - svar[(i, j), t]))
-                LP.addConstr(hvar[i, t] - hvar[j, t] <= valve.hlossmax * (1 - x))
+                LP.addConstr(qvar[(i, j), t] <= valve.qmax * svar[(i, j), t], name=f'vu({i},{j},{t})')
+                LP.addConstr(qvar[(i, j), t] >= valve.qmin * x, name=f'vl({i},{j},{t})')
+                LP.addConstr(hvar[i, t] - hvar[j, t] >= valve.hlossmin * (1 - svar[(i, j), t]), name=f'hvl({i},{j},{t})')
+                LP.addConstr(hvar[i, t] - hvar[j, t] <= valve.hlossmax * (1 - x), name=f'hvu({i},{j},{t})')
 
     # CONVEXIFICATION OF HEAD-FLOW (PIPES)
     for (i, j), pipe in inst.pipes.items():
@@ -90,10 +90,10 @@ def build_model(inst: Instance, pumpvals={}):
         cutbelow, cutabove = oa.pipecuts(pipe.qmin, pipe.qmax, coeff, (i, j))
         # print(f'{pipe}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
         for t in inst.horizon():
-            for c in cutbelow:
-                LP.addConstr(hvar[i, t] - hvar[j, t] >= c[0]*qvar[(i, j), t] + c[1])
-            for c in cutabove:
-                LP.addConstr(hvar[i, t] - hvar[j, t] <= c[0]*qvar[(i, j), t] + c[1])
+            for n, c in enumerate(cutbelow):
+                LP.addConstr(hvar[i, t] - hvar[j, t] >= c[0]*qvar[(i, j), t] + c[1], name=f'hpl{n}({i},{j},{t})')
+            for n, c in enumerate(cutabove):
+                LP.addConstr(hvar[i, t] - hvar[j, t] <= c[0]*qvar[(i, j), t] + c[1], name=f'hpu{n}({i},{j},{t})')
 
     # ACTIVITY (PUMPS)
     for a, pump in inst.pumps.items():
@@ -104,16 +104,16 @@ def build_model(inst: Instance, pumpvals={}):
 
     # CONVEXIFICATION OF HEAD-FLOW (PUMPS)
     for (i, j), pump in inst.pumps.items():
-        cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
-        #cutbelow, cutabove = oa.pumpcutsgratien(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
+        ##cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
+        cutbelow, cutabove = oa.pumpcutsgratien(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
         for t in inst.horizon():
-            for c in cutbelow:
+            for n, c in enumerate(cutbelow):
                 LP.addConstr(hvar[j, t] - hvar[i, t] >= c[0] * qvar[(i, j), t]
-                             + (c[1] - pump.offdhmin) * svar[(i, j), t] + pump.offdhmin)
+                             + (c[1] - pump.offdhmin) * svar[(i, j), t] + pump.offdhmin, name=f'hkl{n}({i},{j},{t})')
             for n, c in enumerate(cutabove):
                 # !!! original code: gapabove = 0 if pump.offdhmax == 1000 else pump.offdhmax - c[1] ???
                 LP.addConstr(hvar[j, t] - hvar[i, t] <= c[0] * qvar[(i, j), t]
-                             + (c[1] - pump.offdhmax) * svar[(i, j), t] + pump.offdhmax)
+                             + (c[1] - pump.offdhmax) * svar[(i, j), t] + pump.offdhmax, name=f'hku{n}({i},{j},{t})')
 
     ### PUMP SWITCHING
     sympumps = inst.symmetries
