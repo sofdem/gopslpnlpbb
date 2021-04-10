@@ -15,7 +15,7 @@ import convexrelaxation as rel
 import lpnlpbb as bb
 import sys
 
-instance = Instance('Simple_Network', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 2)
+instance = Instance('Simple_Network', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 1)
 #instance = Instance('Richmond', 'Profile_5d_30m_smooth', '21/05/2013 07:00', '22/05/2013 07:00', 4)
 #instance = Instance('Anytown', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 2)
 print('parse:', instance.name, 'horizon start:', instance.periods[0],

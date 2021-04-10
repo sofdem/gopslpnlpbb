@@ -11,7 +11,7 @@ import numpy as np
 import pylab as plt
 
 
-EPSILON = 0.01
+EPSILON = 0.1
 
 def hloss(q, coeff):
     """Value of the quadratic head loss function coeff at q."""
