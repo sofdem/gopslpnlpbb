@@ -87,7 +87,7 @@ def build_model(inst: Instance, pumpvals={}):
     # CONVEXIFICATION OF HEAD-FLOW (PIPES)
     for (i, j), pipe in inst.pipes.items():
         coeff = [pipe.hloss[2], pipe.hloss[1]]
-        cutbelow, cutabove = oa.pipecutsgratien(pipe.qmin, pipe.qmax, coeff, (i, j))
+        cutbelow, cutabove = oa.pipecuts(pipe.qmin, pipe.qmax, coeff, (i, j))
         # print(f'{pipe}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
         for t in inst.horizon():
             for n, c in enumerate(cutbelow):
