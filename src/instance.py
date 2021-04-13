@@ -14,17 +14,19 @@ from pathlib import Path
 
 TARIFF_COLNAME = 'elix'
 
-def update_min(varmin, newmin):
-        if newmin <= varmin:
-            print(f'do not update min {varmin:.3f} to {newmin:.3f}')
-            return varmin
-        return newmin
+def update_min(oldlb: float, newlb: float) -> float:
+    """Update lower bound only if better: returns max(oldlb, newlb)."""
+    if newlb <= oldlb:
+        print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
+        return oldlb
+    return newlb
 
-def update_max(varmax, newmax):
-        if newmax >= varmax:
-            print(f'do not update max {varmax:.3f} to {newmax:.3f}')
-            return varmax
-        return newmax
+def update_max(oldub: float, newub: float) -> float:
+    """Update upper bound only if better: returns min(oldub, newub)."""
+    if newub >= oldub:
+        print(f'do not update max {oldub:.3f} to {newub:.3f}')
+        return oldub
+    return newub
 
 
 class _Node:
@@ -208,7 +210,6 @@ class Instance:
         self.nodes       = self._getnodes()
         self.incidence   = self._getincidence()
 
-        # periods, profiles, tariff = self._parse_profiles('Profile.csv', 'Tariff_ELIX.csv', starttime, endtime, aggregatesteps)
         periods, profiles = self._parse_profiles(f'{profilename}.csv', starttime, endtime, aggregatesteps)
         self.periods     = periods
         self.profiles    = profiles
@@ -237,6 +238,7 @@ class Instance:
         rows = csv.reader(csvfile, delimiter=';')
         data = [[x.strip() for x in row] for row in rows]
         return data
+
 
     def _parse_initvolumes(self, filename):
         data = self._parsecsv(filename)
@@ -298,6 +300,7 @@ class Instance:
         periods.append(dt.datetime.strptime(endtime, '%d/%m/%Y %H:%M'))
         return periods, profiles
 
+
     def _parse_profiles_aggregate(self, filename, starttime, endtime, aggsteps):
         data = self._parsecsv(filename)
         i = 1
@@ -325,68 +328,8 @@ class Instance:
         assert i < len(data), f'{filename}: not found end {starttime}'
         return periods, profiles
 
-    def _parse_old_profiles(self, filename, tariffilename, starttime, endtime, aggsteps):
-        data = self._parsecsv(filename)
-        i = 1
-        while i < len(data) and data[i][0] != starttime:
-            # print(f'{data[i][0]} == {starttime}')
-            i += 1
-        assert i < len(data), f'starting time {starttime} not found in {filename}'
-        datariff = self._parsecsv(tariffilename)
-        assert datariff[i][0] == starttime, f'{starttime} not found in {filename} at row {i}'
-
-        periods = []
-        name = data[0][1:]
-        profiles = {n: [] for n in name}
-        tariff = []
-        while i < len(data) and data[i][0] != endtime:
-            for j, n in enumerate(name):
-                profiles[n].append(float(data[i][j+1]))
-            tariff.append(float(datariff[i][1]))
-            periods.append(dt.datetime.strptime(data[i][0], '%d/%m/%Y %H:%M'))
-            i += aggsteps
-            assert datariff[i][0] == data[i][0], f'{filename} and {tariffilename} not synchronized'
-        assert i < len(data), f'end time {starttime} not found in {filename}'
-        periods.append(dt.datetime.strptime(endtime, '%d/%m/%Y %H:%M'))
-        return periods, profiles, tariff
-
-    def _parse_old_profiles_aggregate(self, filename, tariffilename, starttime, endtime, aggsteps):
-        data = self._parsecsv(filename)
-        i = 1
-        while i < len(data) and data[i][0] != starttime:
-            i += 1
-        assert i < len(data), f'starting time {starttime} not found in {filename}'
-        datariff = self._parsecsv(tariffilename)
-        assert datariff[i][0] == starttime, f'{starttime} not found in {filename} at row {i}'
-
-        periods = []
-        name = data[0][1:]
-        profiles = {n: [] for n in name}
-        tariff = []
-        sumagg = [0 for n in name]
-        sumaggtariff = 0
-        cntagg = 0
-        while i < len(data) and data[i][0] != endtime:
-            i += 1
-            if cntagg == aggsteps:
-                cntagg = 0
-                for j, s in enumerate(sumagg):
-                    profiles[name[j]].append(s/aggsteps)
-                    sumagg[j] = 0
-                    periods.append(data[i][0])
-                assert datariff[i][0] == data[i][0], f'{filename}, {tariffilename} unsynchronized'
-                tariff.append(sumaggtariff/aggsteps)
-                sumaggtariff = 0
-            cntagg += 1
-            for j, s in enumerate(sumagg):
-                sumagg[j] += float(data[i][j+1])
-                sumaggtariff += float(datariff[i][1])
-        assert i < len(data), f'{filename}: not found end {starttime}'
-        return periods, profiles, tariff
-
     def _get_timestepduration(self, periods):
         duration = periods[1] - periods[0]
-        # !!! move loop to 1-line assert
         for i in range(len(periods)-1):
             assert duration == periods[i+1] - periods[i]
         return duration
@@ -407,17 +350,20 @@ class Instance:
                 elif i[0] in self.valves:
                     self.arcs[i[0]].update_hbounds(b[0]-1e-2, b[1]+1e-2)
 
+
     def _getarcs(self):
         arcs = dict(self.pumps)
         arcs.update(self.valves)
         arcs.update(self.pipes)
         return arcs
 
+
     def _getnodes(self):
         nodes = dict(self.junctions)
         nodes.update(self.tanks)
         nodes.update(self.reservoirs)
         return nodes
+
 
     def _getincidence(self):
         incidence = {}
@@ -431,6 +377,7 @@ class Instance:
                     incidence[node, 'out'].add(arc)
         return incidence
 
+
     def pumps_without_sym(self):
         """Aggregate symmetric pumps as a fictional 'sym' pump."""
         uniquepumps = set(self.pumps.keys())
@@ -439,6 +386,7 @@ class Instance:
             uniquepumps -= set(symgroup)
             uniquepumps.add('sym')
         return sorted(uniquepumps, key=str)
+
 
     def _pump_symmetric(self):
         """Return a list of symmetric pumps."""
@@ -452,6 +400,7 @@ class Instance:
             return [('Arguenon_IN_1', 'Arguenon_OUT'), ('Arguenon_IN_2', 'Arguenon_OUT'),
                     ('Arguenon_IN_3', 'Arguenon_OUT'), ('Arguenon_IN_4', 'Arguenon_OUT')]
         return []
+
 
     def _dependencies(self):
         """Return 4 types of control dependencies as a dict of lists of dependent pumps/valves."""
@@ -473,10 +422,14 @@ class Instance:
 
         return dep
 
+
     def tostr_basic(self):
         return f'{self.name} {self.periods[0]} {self.horizon()}'
+
+
     def tostr_network(self):
         return f'{len(self.pumps)} pumps, {len(self.valves)} valves, {len(self.tanks)} tanks'
+
 
     def print_all(self):
         print(f'{self.tostr_basic()} {self.tostr_network()}')
@@ -484,6 +437,7 @@ class Instance:
         for i, a in self.arcs.items():
             print(i)
             print(str(a))
+
 
     def transcript_bounds(self, csvfile):
         """Parse bounds in the hdf file."""

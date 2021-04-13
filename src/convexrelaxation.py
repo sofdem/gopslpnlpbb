@@ -87,13 +87,13 @@ def build_model(inst: Instance, pumpvals={}):
     # CONVEXIFICATION OF HEAD-FLOW (PIPES)
     for (i, j), pipe in inst.pipes.items():
         coeff = [pipe.hloss[2], pipe.hloss[1]]
-        cutbelow, cutabove = oa.pipecuts(pipe.qmin, pipe.qmax, coeff, (i, j))
+        cutbelow, cutabove = oa.pipecutsgratien(pipe.qmin, pipe.qmax, coeff, (i, j))
         # print(f'{pipe}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
         for t in inst.horizon():
             for n, c in enumerate(cutbelow):
-                LP.addConstr(hvar[i, t] - hvar[j, t] >= c[0]*qvar[(i, j), t] + c[1], name=f'hpl{n}({i},{j},{t})')
+                LP.addConstr(hvar[i, t] - hvar[j, t] >= c[1]*qvar[(i, j), t] + c[0], name=f'hpl{n}({i},{j},{t})')
             for n, c in enumerate(cutabove):
-                LP.addConstr(hvar[i, t] - hvar[j, t] <= c[0]*qvar[(i, j), t] + c[1], name=f'hpu{n}({i},{j},{t})')
+                LP.addConstr(hvar[i, t] - hvar[j, t] <= c[1]*qvar[(i, j), t] + c[0], name=f'hpu{n}({i},{j},{t})')
 
     # ACTIVITY (PUMPS)
     for a, pump in inst.pumps.items():
@@ -108,12 +108,12 @@ def build_model(inst: Instance, pumpvals={}):
         #cutbelow, cutabove = oa.pumpcutsgratien(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
         for t in inst.horizon():
             for n, c in enumerate(cutbelow):
-                LP.addConstr(hvar[j, t] - hvar[i, t] >= c[0] * qvar[(i, j), t]
-                             + (c[1] - pump.offdhmin) * svar[(i, j), t] + pump.offdhmin, name=f'hkl{n}({i},{j},{t})')
+                LP.addConstr(hvar[j, t] - hvar[i, t] >= c[1] * qvar[(i, j), t]
+                             + (c[0] - pump.offdhmin) * svar[(i, j), t] + pump.offdhmin, name=f'hkl{n}({i},{j},{t})')
             for n, c in enumerate(cutabove):
                 # !!! original code: gapabove = 0 if pump.offdhmax == 1000 else pump.offdhmax - c[1] ???
-                LP.addConstr(hvar[j, t] - hvar[i, t] <= c[0] * qvar[(i, j), t]
-                             + (c[1] - pump.offdhmax) * svar[(i, j), t] + pump.offdhmax, name=f'hku{n}({i},{j},{t})')
+                LP.addConstr(hvar[j, t] - hvar[i, t] <= c[1] * qvar[(i, j), t]
+                             + (c[0] - pump.offdhmax) * svar[(i, j), t] + pump.offdhmax, name=f'hku{n}({i},{j},{t})')
 
     ### PUMP SWITCHING
     sympumps = inst.symmetries
