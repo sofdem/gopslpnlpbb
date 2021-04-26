@@ -26,6 +26,7 @@ class Stat:
         self.lb = cvxmodel.objBound
         self.nodes = cvxmodel.NodeCount
         self.iter = cvxmodel.IterCount
+        self.numbv = cvxmodel.NumVars
         if not instance:
             self.instance = cvxmodel._instance
             self.cpu_cb = cvxmodel._callbacktime
@@ -40,14 +41,14 @@ class Stat:
 
     @staticmethod
     def tocsv_title():
-        return 'ub, real_ub, lb, gap, cpu, cpu_cb, nodes, int_nodes'
+        return 'ub, real_ub, lb, gap, cpu, cpu_cb, nodes, int_nodes, numb_var'
 
     def tocsv_basic(self):
-        return f"{self.ub:.2f}, {self.realub:.2f}, {self.lb:.2f}, {self.gap:.4f}, {self.cpu:.1f}, {self.cpu_cb:.1f}, {self.nodes}, {self.intnodes}"
+        return f"{self.ub:.2f}, {self.realub:.2f}, {self.lb:.2f}, {self.gap:.4f}, {self.cpu:.1f}, {self.cpu_cb:.1f}, {self.nodes}, {self.intnodes}, {self.numbv}"
     def tostr_basic(self):
-        return f"cost: {self.ub:.2f}, gap: {self.gap:.4f}%, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.1f}s, nodes: {self.nodes}, {self.intnodes}"
+        return f"cost: {self.ub:.2f}, gap: {self.gap:.4f}%, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.1f}s, nodes: {self.nodes}, {self.intnodes}, numbv: {self.numbv: .0f}"
     def tostr_full(self):
-        return f"cost: {self.ub:.2f}, realcost: {self.realub:.2f}, lb: {self.lb:.2f}, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.2f}s, nodes: {self.nodes:.0f}, {self.intnodes}"
+        return f"cost: {self.ub:.2f}, realcost: {self.realub:.2f}, lb: {self.lb:.2f}, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.2f}s, nodes: {self.nodes:.0f}, {self.intnodes}, numbv: {self.numbv: .0f}"
 
 
 

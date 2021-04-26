@@ -110,11 +110,12 @@ def build_model(inst: Instance, pumpvals={}):
             for n, c in enumerate(cutbelow):
                 LP.addConstr(hvar[j, t] - hvar[i, t] >= c[0] * qvar[(i, j), t]
                              + (c[1] - pump.offdhmin) * svar[(i, j), t] + pump.offdhmin, name=f'hkl{n}({i},{j},{t})')
+                print (list(enumerate(cutbelow)))
             for n, c in enumerate(cutabove):
                 # !!! original code: gapabove = 0 if pump.offdhmax == 1000 else pump.offdhmax - c[1] ???
                 LP.addConstr(hvar[j, t] - hvar[i, t] <= c[0] * qvar[(i, j), t]
                              + (c[1] - pump.offdhmax) * svar[(i, j), t] + pump.offdhmax, name=f'hku{n}({i},{j},{t})')
-
+                print (list(enumerate(cutabove)))
     ### PUMP SWITCHING
     sympumps = inst.symmetries
     uniquepumps = inst.pumps_without_sym()
