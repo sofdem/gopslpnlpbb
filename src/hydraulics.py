@@ -14,9 +14,10 @@ from copy import deepcopy
 class HydraulicNetwork:
     """An alternative view of the water network with aggregated valves."""
 
-    def __init__(self, instance: inst.Instance):
+    def __init__(self, instance: inst.Instance, feastol: float):
         """Create an HydraulicNetwork from an Instance."""
         self.instance = instance
+        self.feastol = feastol
         self.arcs, self.incidence, self.aggregate = self._aggregate(instance)
         assert self._check_network(self.incidence)
 
@@ -31,7 +32,7 @@ class HydraulicNetwork:
             incidence[i].add((i, j))
             incidence[j].add((i, j))
 
-        # !!! should aggregate pipes to valves rather than the inverse
+        # !!!  aggregate pipes to valves rather than the opposite
         for (i, j), pipe in instance.pipes.items():
             outvalves = [v for v in instance.outarcs(j) if instance.valves.get(v)]
             assert len(outvalves) < 2, f'several valves after pipe {(i,j)}: {outvalves}'
@@ -107,6 +108,7 @@ class HydraulicNetwork:
         assert arcs, "the active network is empty"
         return arcs, incidence
 
+
     def build_TP_matrices(self, arcs, incidence, period, volumes):
         """Build the matrices for the Todini-Pilati algorithm."""
         nodeindex = {}
@@ -149,6 +151,7 @@ class HydraulicNetwork:
                     A10[j][i] = val
         return nodeindex, q, H0, A21, A12, A10
 
+
     def _flow_analysis(self, inactive: set, period: int, volumes: dict):
 
         arcs, incidence = self.active_network(inactive)
@@ -173,11 +176,7 @@ class HydraulicNetwork:
 
         return flow, head
 
-    # !!! deduce stronger cuts by finding an earlier violation:
-    # if (volumes[t+1] < vmin) find t'<t s.t vmin is unreachable with max inflow from t' to t
-    # if (volumes[t+1] > vmax) find t'<t s.t vmax is unavoidable with max outflow from t' to t
-    # or by relaunching with alternative configurations and using network decomposition
-    # using pump symmetries and deoendencies
+
     def extended_period_analysis(self, inactive: dict, stopatviolation=True):
         """Run flow analysis progressively on each time period."""
         violations = []
@@ -189,35 +188,26 @@ class HydraulicNetwork:
 
         for t in range(nperiods):
 
-            # print(f'inactive[{t}] = {inactive[t]}')
-
             flow[t], head[t] = self._flow_analysis(inactive[t], t, volumes[t])
-
-            # print(f'flow analysis: head[{t}] = {head[t]}')
-            # sys.exit(1)
 
             for i, tank in self.instance.tanks.items():
                 volumes[t+1][i] = volumes[t][i] + 3.6 * self.instance.tsinhours() \
                     * (sum(flow[t][a] for a in self.instance.inarcs(i))
                        - sum(flow[t][a] for a in self.instance.outarcs(i)))
 
-                if volumes[t+1][i] < tank.vmin or volumes[t+1][i] > tank.vmax:
-                    if volumes[t+1][i] < tank.vmin:
-                        print(f'violation t={t} tk={i}: {volumes[t+1][i]-tank.vmin:.2f}')
-                    else:
-                        print(f'violation t={t} tk={i}: {volumes[t+1][i]-tank.vmax:.2f}')
+                if volumes[t+1][i] < tank.vmin - self.feastol or volumes[t+1][i] > tank.vmax + self.feastol:
+                    violations.append((t+1, i,
+                                       volumes[t+1][i]-tank.vmin if volumes[t+1][i] < tank.vmin - self.feastol
+                                       else volumes[t+1][i]-tank.vmax))
 
                     if stopatviolation:
-                        return flow, head, volumes, t+1
-                    else:
-                        violations.append(t+1)
+                        return flow, head, volumes, violations
 
-        for tank in self.instance.tanks:
-            if volumes[nperiods][tank] < volumes[0][tank]:
+        for i, tank in self.instance.tanks.items():
+            if volumes[nperiods][i] < tank.vinit - self.feastol:
+                violations.append((nperiods, i, volumes[nperiods][i]))
                 if stopatviolation:
-                    return flow, head, volumes, nperiods
-                else:
-                    violations.append(nperiods)
+                    return flow, head, volumes, violations
 
         return flow, head, volumes, violations
 
@@ -241,11 +231,8 @@ def TodiniPilati(arcs, q, H0, A21, A12, A10):
         H = - np.linalg.inv(A21 @ D @A12) @ (A21 @ D @ (A11 @ Q + A10 @ H0) + q - A21 @ Q)
         Q = (Id - D @ A11) @ Q - D @ (A12 @ H + A10 @ H0)
 
-
-        # SD: pas besoin de tester si Q != 0 et Q[pump] > 0 ???
+        #!!! assert Q!=0 and Q[pump]>0
         gap = sum(abs(Q[i][0]-Qold[i][0]) for i, arc in enumerate(arcs)) \
             / sum(abs(Q[i][0]) for i, arc in enumerate(arcs))
-
-    # print("todini sum =", sum(abs(Q[i][0]) for i, arc in enumerate(arcs)))
 
     return Q, H
