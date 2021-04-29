@@ -1,53 +1,75 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Fri Apr  3 11:07:46 2020
+Created on Fri Mar 26 11:07:46 2021
 
-@author: Sophie Demassey, Gratien Bonvin
+@author: Sophie Demassey
 
-Solve the LPNLP B&B with all the variable bounds previously tighten:
+Run the B&B on a subset of the easiest instances
 bounds are read from a file (.hdf)
 
 """
 
 from instance import Instance
+from datetime import date
 import convexrelaxation as rel
 import lpnlpbb as bb
 import sys
 
-instance = Instance('Simple_Network', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 2)
-#instance = Instance('Richmond', 'Profile_5d_30m_smooth', '21/05/2013 07:00', '22/05/2013 07:00', 4)
-#instance = Instance('Anytown', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 2)
-print('parse:', instance.name, 'horizon start:', instance.periods[0],
-      'horizon length:', instance.horizon(), 'timestep:', instance.tsinhours())
-print(len(instance.pumps), 'pumps', len(instance.valves), 'valves', len(instance.tanks), 'tanks')
+fastbench = [
+    ['FSDs 1 12', 'Simple_Network', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 4],
+    ['FSDs 1 24', 'Simple_Network', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 2],
+    ['FSDs 2 24', 'Simple_Network', 'Profile_5d_30m_smooth', '02/01/2013 00:00', '03/01/2013 00:00', 2],
+    ['FSDs 3 24', 'Simple_Network', 'Profile_5d_30m_smooth', '03/01/2013 00:00', '04/01/2013 00:00', 2],
+    ['FSDs 4 24', 'Simple_Network', 'Profile_5d_30m_smooth', '04/01/2013 00:00', '05/01/2013 00:00', 2],
+    ['FSDs 5 24', 'Simple_Network', 'Profile_5d_30m_smooth', '05/01/2013 00:00', '06/01/2013 00:00', 2],
+    ['FSDs 1 48', 'Simple_Network', 'Profile_5d_30m_smooth', '01/01/2013 00:00', '02/01/2013 00:00', 1],
+    ['RICs 3 12', 'Richmond',       'Profile_5d_30m_smooth', '23/05/2013 07:00', '24/05/2013 07:00', 4],
+    ['RICs 4 12', 'Richmond',       'Profile_5d_30m_smooth', '24/05/2013 07:00', '25/05/2013 07:00', 4],
+]
 
-#instance.print_all()
+now = date.today().strftime("%y%m%d")
+resfilename = f'res{now}.csv'
+f = open(resfilename, 'w')
+f.write('ntk day T, ' + bb.Stat.tocsv_title() + '\n')
+f.close()
 
-print("obbt: parse bounds")
-try:
-    #instance.transcript_bounds(f'{instance.name}_bounds.csv')
-    instance.parse_bounds()
-except UnicodeDecodeError as err:
-  print(f'obbt bounds not read: {err}')
-#instance.print_all()
+for i in fastbench:
 
-
-print("create model")
-cvxmodel = rel.build_model(instance)
-cvxmodel.write('convrel.lp')
-cvxmodel.params.timeLimit = 3600
-# cvxmodel.params.MIPGap = 0.01
-# cvxmodel.params.OutputFlag = 0
-# cvxmodel.params.Threads = 1
-# cvxmodel.params.FeasibilityTol = 1e-5
+    print('***********************************************')
+    instance = Instance(i[1],i[2],i[3],i[4],i[5])
+    print(instance.tostr_basic())
+    print(instance.tostr_network())
 
 
-print("solve model")
-#stats = bb.solveconvex(cvxmodel, instance)
-stats = bb.lpnlpbb(cvxmodel, instance, adjust_mode="")
+    print("obbt: parse bounds")
+    try:
+        instance.parse_bounds()
+    except UnicodeDecodeError as err:
+        print(f'obbt bounds not read: {err}')
 
-print(f"solution for {instance.tostr_basic()}")
-print(stats.tostr_basic())
-print(stats.tostr_full())
+
+    print("create model")
+    cvxmodel = rel.build_model(instance)
+    # cvxmodel.write('convrel.lp')
+    cvxmodel.params.timeLimit = 1000 #3600
+    #cvxmodel.params.MIPGap = 0.01
+    # cvxmodel.params.OutputFlag = 0
+    # cvxmodel.params.Threads = 1
+    #cvxmodel.params.FeasibilityTol = 1e-5
+
+
+    print("solve model")
+    # stats = bb.solveconvex(cvxmodel, instance, drawsolution = False)
+    stats = bb.lpnlpbb(cvxmodel, instance, drawsolution = False, adjust_mode="CUT")
+
+    print('***********************************************')
+    print(f"solution for {instance.tostr_basic()}")
+    print(stats.tostr_basic())
+    print(stats.tostr_full())
+
+    f = open(resfilename, 'a')
+    f.write(f"{i[0]}, {stats.tocsv_basic()}\n")
+    f.close()
+    cvxmodel.terminate()
 

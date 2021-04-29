@@ -30,7 +30,7 @@ def update_max(oldub: float, newub: float) -> float:
 
 
 class _Node:
-    """Generic network node. coordinates X, Y, Z."""
+    """Generic network node. coordinates X, Y, Z (in m)."""
 
     def __init__(self, id_, x, y, z):
         self.id = id_
@@ -59,11 +59,14 @@ class _Tank(_Node):
     def head(self, volume):
         return self.altitude() + volume / self.surface
 
+    def volume(self, head):
+        return (head - self.altitude()) * self.surface
+
 
 class _Junction(_Node):
     """Network node of type junction.
 
-    dmean    : mean demand (in m3/h)
+    dmean    : mean demand (in L/s)
     dprofile : demand pattern profile id
     """
 
@@ -84,12 +87,13 @@ class _Reservoir(_Node):
     """Network node of type infinite reservoirs (sources).
 
     hprofile : head profile id
-    drawmax  : maximal withdrawal (in m3/h)
-    drawcost : withdrawal cost    (in euro/(m3/h))
+    drawmax  : maximal daily withdrawal (in m3)
+    drawcost : withdrawal cost  (in euro/m3)
     """
 
     def __init__(self, id_, x, y, z, profileid, drawmax, drawcost):
         _Node.__init__(self, id_, x, y, z)
+        assert drawmax == 'NO', "max source withdrawal not completetly supported"
         self.drawmax = None if (drawmax == 'NO') else drawmax
         self.drawcost = drawcost
         self.profileid = profileid
@@ -106,8 +110,8 @@ class _Arc:
     """Generic network arc.
 
     id      : identifier '(i,j)' with i the start node id, and j the end node id
-    qmin    : minimum flow value <= q(i,j) (in m3/h)
-    qmax    : maximum flow value >= q(i,j) (in m3/h)
+    qmin    : minimum flow value <= q(i,j) (in L/s)
+    qmax    : maximum flow value >= q(i,j) (in L/s)
     """
 
     def __init__(self, id_, nodes, qmin, qmax):
@@ -127,7 +131,7 @@ class _Arc:
 class _Pipe(_Arc):
     """Network arc of type pipe.
 
-    hloss   : head loss polynomial function: h(i) - h(j) = sum_n hloss[n] q(i,j)^n (in meter)
+    hloss   : head loss polynomial function: h(i) - h(j) = sum_n hloss[n] q(i,j)^n (L/s -> m)
     """
 
     def __init__(self, id_, nodes, hloss, qmin, qmax):
@@ -165,8 +169,8 @@ class _Pump(_Arc):
     """Network arc of type pump.
 
     type    : 'FSD' or 'VSD'
-    hgain   : head gain polynomial function: h(j) - h(i) = sum_n headgain[n]q(i,j)^n (in meter)
-    power   : power polynomial function: p = sum_n power[n]q(i,j)^n (in ???)
+    hgain   : head gain polynomial function: h(j) - h(i) = sum_n headgain[n]q(i,j)^n (L/s -> m)
+    power   : power polynomial function: p = sum_n power[n]q(i,j)^n (L/s -> W)
     """
 
     def __init__(self, id_, nodes, hgain, power, qmin, qmax, offdhmin, offdhmax, type_):
@@ -226,15 +230,15 @@ class Instance:
 
     def nperiods(self): return len(self.periods) - 1
     def horizon(self): return range(self.nperiods())
-    def tsinhours(self): return self.tsduration.total_seconds() / 3600
-    def eleccost(self, t): return self.tsinhours() * self.tariff[t] / 1000
+    def tsinhours(self): return self.tsduration.total_seconds() / 3600      # in hour
+    def eleccost(self, t): return self.tsinhours() * self.tariff[t] / 1000  # in euro/W
     def inarcs(self, node): return self.incidence[node, 'in']
     def outarcs(self, node): return self.incidence[node, 'out']
 
     #  PARSERS
 
     def _parsecsv(self, filename):
-        csvfile = open(self.DATADIR / self.name / filename)
+        csvfile = open(Path(self.DATADIR, self.name, filename))
         rows = csv.reader(csvfile, delimiter=';')
         data = [[x.strip() for x in row] for row in rows]
         return data
@@ -296,7 +300,7 @@ class Instance:
                 profiles[n].append(float(data[i][j+1]))
             periods.append(dt.datetime.strptime(data[i][0], '%d/%m/%Y %H:%M'))
             i += aggsteps
-        assert i < len(data), f'end time {starttime} not found in {filename}'
+        assert i < len(data), f'end time {endtime} not found in {filename}'
         periods.append(dt.datetime.strptime(endtime, '%d/%m/%Y %H:%M'))
         return periods, profiles
 
@@ -325,7 +329,7 @@ class Instance:
             cntagg += 1
             for j, s in enumerate(sumagg):
                 sumagg[j] += float(data[i][j+1])
-        assert i < len(data), f'{filename}: not found end {starttime}'
+        assert i < len(data), f'{filename}: not found end {endtime}'
         return periods, profiles
 
     def _get_timestepduration(self, periods):
@@ -339,7 +343,7 @@ class Instance:
     def parse_bounds(self, filename=None):
         """Parse bounds in the hdf file."""
         file = Path(Instance.BNDSDIR, filename if filename else self.name)
-        bounds = pd.read_hdf(file.with_suffix('.hdf')).to_dict()
+        bounds = pd.read_hdf(file.with_suffix('.hdf'), encoding='latin1').to_dict()
         for i, b in bounds.items():
             if i[1] == 'flow':
                 if i[0] in self.arcs:
@@ -444,3 +448,12 @@ class Instance:
         file = Path(Instance.BNDSDIR, self.name)
         pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
 
+
+    def parsesolution(self, filename):
+        csvfile = open(filename)
+        rows = csv.reader(csvfile, delimiter=',')
+        data = [[x.strip() for x in row] for row in rows]
+        csvfile.close()
+        assert float(data[0][1]) == self.nperiods(), f"wrong solution file {data[0]} for instance {self.tostr_basic()}: different horizons"
+        inactive = {t: set((A[0],A[1]) for A in data[1:] if A[t+2] == '0') for t in self.horizon()}
+        return inactive
