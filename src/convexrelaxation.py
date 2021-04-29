@@ -14,7 +14,7 @@ import datetime as dt
 
 
 # !!! check round values
-def build_model(inst: Instance, pumpvals={}):
+def build_model(inst: Instance, epsilon: float, pumpvals={}):
     """Build the convex relaxation gurobi model."""
 
     LP = gp.Model('Pumping_Schedulding')
@@ -87,7 +87,7 @@ def build_model(inst: Instance, pumpvals={}):
     # CONVEXIFICATION OF HEAD-FLOW (PIPES)
     for (i, j), pipe in inst.pipes.items():
         coeff = [pipe.hloss[2], pipe.hloss[1]]
-        cutbelow, cutabove = oa.pipecuts(pipe.qmin, pipe.qmax, coeff, (i, j))
+        cutbelow, cutabove = oa.pipecuts(pipe.qmin, pipe.qmax, coeff, (i, j), epsilon, drawgraph=False)
         # print(f'{pipe}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
         for t in inst.horizon():
             for n, c in enumerate(cutbelow):
@@ -104,7 +104,7 @@ def build_model(inst: Instance, pumpvals={}):
 
     # CONVEXIFICATION OF HEAD-FLOW (PUMPS)
     for (i, j), pump in inst.pumps.items():
-        cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
+        cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, (i, j), epsilon) #, drawgraph=True)
         #cutbelow, cutabove = oa.pumpcutsgratien(pump.qmin, pump.qmax, pump.hgain, (i, j)) #, drawgraph=True)
         for t in inst.horizon():
             for n, c in enumerate(cutbelow):
@@ -166,5 +166,6 @@ def build_model(inst: Instance, pumpvals={}):
     LP._hvar = hvar
     LP._obj = LP.getObjective()
 
-    LP.write('modelnew.lp')
     return LP
+
+

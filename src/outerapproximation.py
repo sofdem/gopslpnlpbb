@@ -11,8 +11,6 @@ import numpy as np
 import pylab as plt
 
 
-EPSILON = 0.001
-
 #################### analytic functions
 
 def quadval(q, coeff):
@@ -57,14 +55,14 @@ def chord(q1, q2, fval, coeff):
 
 #################### outer approximation of the pipe/pump head-flow relations
 
-def pipecuts(qmin, qmax, coeff, pipe, epsilon=EPSILON, drawgraph=True):
+def pipecuts(qmin, qmax, coeff, pipename, epsilon, drawgraph=False):
     #print(f"OA of pipe {pipe} ******************************************************")
     cutabove = _pipescutabovefrommin(epsilon, qmin, qmax, coeff)
     #print(f"{len(cutabove)} cuts above")
     cutbelow = _pipescutbelowfrommax(epsilon, qmin, qmax, coeff)
     #print(f"{len(cutbelow)} cuts below")
     if drawgraph:
-        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pipe, 'PIPE')
+        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pipename, 'PIPE')
         plt.show()
     return cutbelow, cutabove
 
@@ -119,7 +117,7 @@ def _pipescutbelowfrommax(epsilon, qmin, qmax, coeff):
         cutbelow.append(hlosstangent(qinf, coeff))
     return cutbelow
 
-def pumpcuts(qmin, qmax, coeff, pump, epsilon=EPSILON, drawgraph=True):
+def pumpcuts(qmin, qmax, coeff, pumpname, epsilon, drawgraph=False):
     """Approximation of the quadratic pump function hgain = aq^2 + bq + c by its tangents.
 
     Compute tangents (f_i)_[1,n] progressively from q_1 = qmax such that the intersection q' of
@@ -139,8 +137,8 @@ def pumpcuts(qmin, qmax, coeff, pump, epsilon=EPSILON, drawgraph=True):
         cutabove (list): list of the coefficients of the tangent linear function.
     """
     if coeff[2] == 0:
-        print(f"linear gain for pump {pump}")
-        return coeff, coeff
+        print(f"linear gain for pump {pumpname}")
+        return [coeff], [coeff]
 
     assert coeff[2] < 0 and qmin >= 0 and qmax > qmin, f'{coeff}'
     q = qmax
@@ -152,21 +150,22 @@ def pumpcuts(qmin, qmax, coeff, pump, epsilon=EPSILON, drawgraph=True):
     cutbelow = [quadchord(qmin, qmax, coeff)]
 
     if drawgraph:
-        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pump, 'PUMP')
+        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pumpname, 'PUMP')
         plt.show()
     return cutbelow, cutabove
 
 ############################## test and see
 
 
-def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype):
+def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype, points=[]):
     dq = qmax - qmin
     qs = np.arange(qmin-dq/10.0, qmax+dq/10.0, 0.01)
     if arctype == 'PIPE':
         phi = [hlossval(q, coeff) for q in qs]
     if arctype == 'PUMP':
         phi = [coeff[2] * q * q + coeff[1] * q + coeff[0] for q in qs]
-    plt.title(f'{arctype} ({title[0]}, {title[1]})')
+    plt.figure()
+    plt.title(f'{arctype} {title}')
     plt.plot(qs, phi, linewidth=2, color='r')
     plt.axvline(x=qmin, color='k', linestyle='-', linewidth=2)
     plt.axvline(x=qmax, color='k', linestyle='-', linewidth=2)
@@ -179,9 +178,20 @@ def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype):
         plt.plot(qs, cuts, color='DarkOrange', linestyle='-')
     plt.axhline(y=0.0, color='k', linestyle='--')
     plt.axvline(x=0.0, color='k', linestyle='--')
-    plt.xlim([qmin-dq/10.0, qmax+dq/10.0])
-    return None
 
+    for p in points:
+        plt.plot(p['x'], p['y'], p.get('fmt', 'r+'))
+        if p['x'] < qmin:
+            qmin = p['x']
+            print("point is out of range: {p['x']} < {qmin}")
+        if p['x'] > qmax:
+            qmax = p['x']
+            print("point is out of range: {p['x']} > {qmax}")
+
+    plt.xlim([qmin-dq/10.0, qmax+dq/10.0])
+    plt.ylim([min(phi), max(phi)])
+
+    plt.show()
 
 
 def test():
@@ -249,7 +259,7 @@ def _cutdichotomy(cuts, epsilon, qmin, linmin, qmax, coeff):
         _cutdichotomy(cuts, epsilon, q, lin, qmax, coeff)
 
 
-def pipecutsdichotomy(qmin, qmax, coeff, pipe, epsilon=EPSILON, drawgraph=True):
+def pipecutsdichotomy(qmin, qmax, coeff, pipe, epsilon, drawgraph=True):
     print(f"OA of pipe {pipe} ******************************************************")
     cutabove = _pipescutabovedichotomy(epsilon, qmin, qmax, coeff)
     print(f"{len(cutabove)} cuts above")

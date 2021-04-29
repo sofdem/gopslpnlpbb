@@ -56,7 +56,7 @@ def pumps(instance, qnlp, qconvex=None):
     cbar = fig.colorbar(sm, cax=cax)
     cbar.set_label('electricity cost in 'u"\u20AC"'/MWh', rotation=270, labelpad=25)
 
-    fig.show()
+    plt.show()
 
 
 
@@ -92,7 +92,7 @@ def pumpsStep(instance, qnlp, qconvex=None):
 
     axs[0].set_title('pump flow in $m^3/h$', fontsize=9)
     axs[-1].set_title('electricity cost in 'u"\u20AC"'/MWh', fontsize=9)
-    fig.show()
+    plt.show()
 
 
 def tanks(instance, qnlp, volnlp, volconv=None):
@@ -155,7 +155,7 @@ def tanks(instance, qnlp, volnlp, volconv=None):
     axs[-1].set_xlim([instance.periods[0], instance.periods[-1]])
 
     #plt.tight_layout()
-    #fig.show()
+    plt.show()
 
 def tanksGratien(instance, qnlp, volnlp, volconv=None):
     opacity = 0.6
@@ -265,6 +265,6 @@ def pumpsGratien(instance, qnlp, qconvex=None):
 
     axs[0].set_title('pump flow in $m^3/h$', fontsize=9)
     axs[-1].set_title('electricity cost in 'u"\u20AC"'/MWh', fontsize=9)
-    fig.show()
+    plt.show()
 
 

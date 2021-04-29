@@ -14,51 +14,14 @@ import time
 from hydraulics import HydraulicNetwork
 import graphic
 
-class Stat:
-    """Statistics for solving one instance."""
-
-    def __init__(self, cvxmodel, instance, costreal):
-        self.instance = instance
-        self.date = date.today()
-        self.status = cvxmodel.status
-        self.cpu = cvxmodel.Runtime
-        self.realub = costreal
-        self.lb = cvxmodel.objBound
-        self.nodes = cvxmodel.NodeCount
-        self.iter = cvxmodel.IterCount
-        if not instance:
-            self.instance = cvxmodel._instance
-            self.cpu_cb = cvxmodel._callbacktime
-            self.ub = cvxmodel._incumbent if cvxmodel._solutions else float('inf')
-            self.intnodes = cvxmodel._intnodes
-            self.gap = (self.ub - self.lb) / self.ub
-        else:
-            self.cpu_cb = 0
-            self.ub = cvxmodel.objVal
-            self.intnodes = 0
-            self.gap = cvxmodel.MIPGap
-
-    @staticmethod
-    def tocsv_title():
-        return 'ub, real_ub, lb, gap, cpu, cpu_cb, nodes, int_nodes'
-
-    def tocsv_basic(self):
-        return f"{self.ub:.2f}, {self.realub:.2f}, {self.lb:.2f}, {self.gap:.4f}, {self.cpu:.1f}, {self.cpu_cb:.1f}, {self.nodes}, {self.intnodes}"
-    def tostr_basic(self):
-        return f"cost: {self.ub:.2f}, gap: {self.gap:.4f}%, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.1f}s, nodes: {self.nodes}, {self.intnodes}"
-    def tostr_full(self):
-        return f"cost: {self.ub:.2f}, realcost: {self.realub:.2f}, lb: {self.lb:.2f}, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.2f}s, nodes: {self.nodes:.0f}, {self.intnodes}"
-
-
-
 
 def _attach_callback_data(model, instance, adjust_mode):
     model._incumbent  = GRB.INFINITY
     model._solutions  = []
     model._callbacktime = 0
-    model._gaptol    = 1e-4 #model.Params.OptimalityTol # 1e-2
+    model._gaptol    = model.Params.MIPGap # 1e-2
     model._nperiods  = instance.nperiods()
-    model._network   = HydraulicNetwork(instance)
+    model._network   = HydraulicNetwork(instance, model.Params.FeasibilityTol)
     model._instance  = instance
     model._adjust    = adjust_mode
     model._adjusttime = time.time()
@@ -79,7 +42,7 @@ def mycallback(m, where):
 
     # at an integer solution
     elif where == GRB.Callback.MIPSOL:
-        print(f'integer convex solution: {m.cbGet(GRB.Callback.MIPSOL_OBJ):.2f} (lb={m.cbGet(GRB.Callback.MIPSOL_OBJBND):.2f})')
+        fstring = f"integer leaf: {m.cbGet(GRB.Callback.MIPSOL_OBJ):.2f} [{m.cbGet(GRB.Callback.MIPSOL_OBJBND):.2f}, {'inf' if m._incumbent==GRB.INFINITY else round(m._incumbent,2)}]"
         m._starttime = time.time()
 
         inactive = {t: set() for t in range(m._nperiods)}
@@ -96,10 +59,12 @@ def mycallback(m, where):
         nogood_lastperiod = m._nperiods
 
         if violation:
+            v = violation[0]
             m._intnodes['unfeas'] += 1
-            nogood_lastperiod = violation
+            nogood_lastperiod = v[0]
             costreal = GRB.INFINITY
-            # print('constraint violation at t =', violation, relaxcost)
+            print(fstring + f' violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
+            m.cbLazy(_nogoodcut(m._svar, nogood_lastperiod, activity) >= 0)
 
             if m._adjust and m.cbGet(GRB.Callback.MIPSOL_OBJ) < m._incumbent and time.time() > m._adjusttime + 5:
                 m._intnodes['adjust'] += 1
@@ -109,12 +74,12 @@ def mycallback(m, where):
                 print(f'primal heuristic: {adjustcost}')
                 adjustbest = m._adjust_solutions[-1]["cost"] if m._adjust_solutions else m._incumbent
                 if adjustcost > 0 and adjustcost < min(adjustbest, m._incumbent):
-                    m._adjust_solutions.append({'plan': activity, 'cost': adjustcost})
+                    m._adjust_solutions.append({'plan': activity, 'cost': adjustcost, 'cpu': m.cbGet(GRB.Callback.RUNTIME)})
+                    # !!! diff from original code: generate smallest/deepest (stop to the violated period) nogood cut
                     if m._adjust == "CUT":
                         costreal = adjustcost
                         qreal = None
                         vreal = None
-                    # !!! diff from previously: generate the smallest/deepest (stop to the violated period) nogood cut
 
         else:
             # !!! 1) diff from the original code which did count the reservoirs withdrawal cost
@@ -122,24 +87,25 @@ def mycallback(m, where):
             costreal = solutioncost(m, activity, qreal)
             m._intnodes['feas'] += 1
             assert costreal >= m.cbGet(GRB.Callback.MIPSOL_OBJ), 'relaxed cost > real cost !! '
-            print('solution is feasible:', costreal)
+            print(fstring + f" feasible: {costreal:2f}")
 
         if costreal < m._incumbent:
-            print(f'UPDATE INCUMBENT: {m._incumbent} -> {costreal} (lb={m.cbGet(GRB.Callback.MIPSOL_OBJBND):2f})')
             m._incumbent = costreal
-            m._solutions.append({'plan': activity, 'cost': costreal, 'flows': qreal, 'volumes': vreal})
-
-            if m._incumbent - m.cbGet(GRB.Callback.MIPSOL_OBJBND) < m._gaptol * m._incumbent:
+            m._solutions.append({'plan': activity, 'cost': costreal, 'flows': qreal, 'volumes': vreal, 'cpu': m.cbGet(GRB.Callback.RUNTIME), 'adjusted': (qreal==None)})
+            gap = (m._incumbent - m.cbGet(GRB.Callback.MIPSOL_OBJBND)) / m._incumbent
+            print(f'UPDATE INCUMBENT gap={gap*100:.4f}%') #": {m._incumbent} -> {costreal} (lb={m.cbGet(GRB.Callback.MIPSOL_OBJBND):2f})')
+            if gap < m._gaptol:
                 print('Stop early - ', m._gaptol * 100, '% gap achieved')
                 m.terminate()
             else:
                 m.cbLazy(m._obj <= (1-m._gaptol) * m._incumbent)
 
-        m.cbLazy(_nogoodcut(m._svar, nogood_lastperiod, activity) >= 0)
         m._callbacktime += time.time() - m._starttime
 
-        #!!! TODO: remove lazycut when feasible but add the nonoconvex solution to the solver:
-        # requires to feed values for all the variables of the convex model
+        # discarding feasible nodes with nogoods cuts make the final ObjBound a non-valid lower bound
+        # and prevent Gurobi to keep the integer solutions
+        #!!! TODO (not supported in Gurobi 9.1): cbcSetSolution at feas nodes and set costreal as the LB of the node
+        # m.cbLazy(_nogoodcut(m._svar, nogood_lastperiod, activity) >= 0)
 
 def _parse_activity(horizon, svars):
     inactive = {t: set() for t in horizon}
@@ -195,6 +161,8 @@ def lpnlpbb(cvxmodel, instance, ub=1e6, drawsolution = True, adjust_mode = "SOLV
             inactive = {t: set(a for a, act in activity_t.items() if not act) for t, activity_t in plan.items()}
             flow, hreal, volume, violation = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
             assert violation, 'solution was time-adjusted and should be slightly unfeasible'
+            for v in violation:
+                print(f'violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
             cost = solutioncost(cvxmodel, plan, flow)
             print(f'real plan cost = {cost} / time adjustment cost = {cvxmodel._incumbent}')
         if drawsolution:
@@ -203,7 +171,7 @@ def lpnlpbb(cvxmodel, instance, ub=1e6, drawsolution = True, adjust_mode = "SOLV
     else:
             print('no solution found')
 
-    return Stat(cvxmodel, None, cost)
+    return cost
 
 
 def solveconvex(cvxmodel, instance, drawsolution = True):
@@ -218,8 +186,10 @@ def solveconvex(cvxmodel, instance, drawsolution = True):
     costreal = 0
     if cvxmodel.SolCount:
         inactive, activity = _parse_activity(instance.horizon(), cvxmodel._svar)
-        net = HydraulicNetwork(instance)
+        net = HydraulicNetwork(instance, 1e-4)
         qreal, hreal, vreal, violations = net.extended_period_analysis(inactive, stopatviolation=False)
+        for v in violations:
+            print(f'violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
         actreal = {t: {a: (0 if abs(q) < 1e-6 else 1) for a, q in qreal[t].items()} for t in qreal}
         costreal = solutioncost(cvxmodel, actreal, qreal)
 
@@ -227,5 +197,5 @@ def solveconvex(cvxmodel, instance, drawsolution = True):
             graphic.pumps(instance, qreal)
             graphic.tanks(instance, qreal, vreal)
 
-    return Stat(cvxmodel, instance, costreal)
+    return costreal
 
