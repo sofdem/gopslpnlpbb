@@ -11,11 +11,12 @@ import numpy as np
 import pylab as plt
 
 
-#################### analytic functions
+# analytic functions
 
 def quadval(q, coeff):
     """Value of a quadratic function coeff at q."""
-    return coeff[0] + coeff[1] * q + coeff[2] * q**2
+    return coeff[0] + coeff[1] * q + coeff[2] * q ** 2
+
 
 def quadtangent(q, coeff):
     """Tangent line of a quadratic function coeff at q: f(q) + f'(q)(x-q)."""
@@ -23,15 +24,18 @@ def quadtangent(q, coeff):
     c0 = quadval(q, coeff) - c1 * q
     return [c0, c1]
 
+
 def quadchord(q1, q2, coeff):
     """Line intersecting a quadratic function coeff at q1 and q2."""
     c1 = coeff[2] * (q1 + q2) + coeff[1]
     c0 = coeff[0] - coeff[2] * q1 * q2
     return [c0, c1]
 
+
 def hlossval(q, coeff):
     """Value of the quadratic head loss function coeff at q."""
     return coeff[0] * q * abs(q) + coeff[1] * q
+
 
 def hlosstangent(q, coeff):
     """Tangent line of the head loss function coeff at q: f(q) + f'(q)(x-q)."""
@@ -39,30 +43,34 @@ def hlosstangent(q, coeff):
     c0 = -coeff[0] * abs(q) * q
     return [c0, c1]
 
+
 def hlosschord(q1, q2, coeff):
     """Line intersecting a quadratic function coeff at q1 and q2."""
     assert q1 < q2
+    #    return chord(q1, q2, hlossval, coeff)
     c1 = coeff[0] * (q1 + q2) + coeff[1]
-    c0 = -coeff[0]*abs(q1)*q2 if (q1 >= 0 or q2 <= 0) else coeff[0]*q1*q2*(q1+q2)/(q1-q2)
+    c0 = -coeff[0] * abs(q1) * q2 if (q1 >= 0 or q2 <= 0) else coeff[0] * q1 * q2 * (q1 + q2) / (q1 - q2)
     return [c0, c1]
+
 
 def chord(q1, q2, fval, coeff):
     """Line intersecting a function fval/coeff at q1 and q2."""
     c0 = fval(q1, coeff)
     c1 = (c0 - fval(q2, coeff)) / (q1 - q2)
-    c0 -= c1*q1
+    c0 -= c1 * q1
     return [c0, c1]
 
-#################### outer approximation of the pipe/pump head-flow relations
+
+# outer approximation of the pipe/pump head-flow relations
 
 def pipecuts(qmin, qmax, coeff, pipename, epsilon, drawgraph=False):
-    #print(f"OA of pipe {pipe} ******************************************************")
+    # print(f"OA of pipe {pipe} ******************************************************")
     cutabove = _pipescutabovefrommin(epsilon, qmin, qmax, coeff)
-    #print(f"{len(cutabove)} cuts above")
+    # print(f"{len(cutabove)} cuts above")
     cutbelow = _pipescutbelowfrommax(epsilon, qmin, qmax, coeff)
-    #print(f"{len(cutbelow)} cuts below")
+    # print(f"{len(cutbelow)} cuts below")
     if drawgraph:
-        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pipename, 'PIPE')
+        _draw_oa(qmin, qmax, coeff, cutbelow, cutabove, pipename, 'PIPE')
         plt.show()
     return cutbelow, cutabove
 
@@ -87,7 +95,7 @@ def _pipescutabovefrommin(epsilon, qmin, qmax, coeff):
 
     """
     cutabove = []
-    qsup = qmax*(1-sqrt(2))
+    qsup = qmax * (1 - sqrt(2))
     if qmin >= qsup:
         cutabove.append(hlosschord(qmin, qmax, coeff))
     else:
@@ -95,16 +103,17 @@ def _pipescutabovefrommin(epsilon, qmin, qmax, coeff):
         qsup = min(qmax, qsup)
         while q < qsup:
             cutabove.append(hlosstangent(q, coeff))
-            #print(f"cut at {q}")
-            q += 2*sqrt(epsilon / coeff[0])
+            # print(f"cut at {q}")
+            q += 2 * sqrt(epsilon / coeff[0])
         cutabove.append(hlosstangent(qsup, coeff))
     return cutabove
+
 
 def _pipescutbelowfrommax(epsilon, qmin, qmax, coeff):
     """Symmetric of _pipescutabovefrommin on the convex part (q>=0).."""
 
     cutbelow = []
-    qinf = qmin*(1-sqrt(2))
+    qinf = qmin * (1 - sqrt(2))
     if qinf >= qmax:
         cutbelow.append(hlosschord(qmin, qmax, coeff))
     else:
@@ -113,9 +122,10 @@ def _pipescutbelowfrommax(epsilon, qmin, qmax, coeff):
         while q > qinf:
             cutbelow.append(hlosstangent(q, coeff))
             # print(f"cut at {q}")
-            q -= 2*sqrt(epsilon / coeff[0])
+            q -= 2 * sqrt(epsilon / coeff[0])
         cutbelow.append(hlosstangent(qinf, coeff))
     return cutbelow
+
 
 def pumpcuts(qmin, qmax, coeff, pumpname, epsilon, drawgraph=False):
     """Approximation of the quadratic pump function hgain = aq^2 + bq + c by its tangents.
@@ -132,6 +142,8 @@ def pumpcuts(qmin, qmax, coeff, pumpname, epsilon, drawgraph=False):
         qmin (float): minimum flow.
         qmax (float): maximum flow.
         coeff (list): coefficients of the head gain polynomial function.
+        pumpname (string): pump name to draw.
+        drawgraph (bool): draw the graph of the cuts or not.
 
     Returns:
         cutabove (list): list of the coefficients of the tangent linear function.
@@ -140,7 +152,7 @@ def pumpcuts(qmin, qmax, coeff, pumpname, epsilon, drawgraph=False):
         print(f"linear gain for pump {pumpname}")
         return [coeff], [coeff]
 
-    assert coeff[2] < 0 and qmin >= 0 and qmax > qmin, f'{coeff}'
+    assert coeff[2] < 0 <= qmin < qmax, f'{coeff}'
     q = qmax
     cutabove = [quadtangent(qmin, coeff)]
     while q > qmin:
@@ -150,20 +162,19 @@ def pumpcuts(qmin, qmax, coeff, pumpname, epsilon, drawgraph=False):
     cutbelow = [quadchord(qmin, qmax, coeff)]
 
     if drawgraph:
-        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pumpname, 'PUMP')
+        _draw_oa(qmin, qmax, coeff, cutbelow, cutabove, pumpname, 'PUMP')
         plt.show()
     return cutbelow, cutabove
 
-############################## test and see
+
+# test and see
 
 
-def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype, points=[]):
+def _draw_oa(qmin, qmax, coeff, cutbelow, cutabove, title, arctype, points=None):
     dq = qmax - qmin
-    qs = np.arange(qmin-dq/10.0, qmax+dq/10.0, 0.01)
-    if arctype == 'PIPE':
-        phi = [hlossval(q, coeff) for q in qs]
-    if arctype == 'PUMP':
-        phi = [coeff[2] * q * q + coeff[1] * q + coeff[0] for q in qs]
+    qs = np.arange(qmin - dq / 10.0, qmax + dq / 10.0, 0.01)
+    fval = hlossval if arctype == 'PIPE' else quadval
+    phi = [fval(q, coeff) for q in qs]
     plt.figure()
     plt.title(f'{arctype} {title}')
     plt.plot(qs, phi, linewidth=2, color='r')
@@ -179,7 +190,7 @@ def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype, points=[]):
     plt.axhline(y=0.0, color='k', linestyle='--')
     plt.axvline(x=0.0, color='k', linestyle='--')
 
-    for p in points:
+    for p in (points or []):
         plt.plot(p['x'], p['y'], p.get('fmt', 'r+'))
         if p['x'] < qmin:
             qmin = p['x']
@@ -188,7 +199,7 @@ def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype, points=[]):
             qmax = p['x']
             print("point is out of range: {p['x']} > {qmax}")
 
-    plt.xlim([qmin-dq/10.0, qmax+dq/10.0])
+    plt.xlim([qmin - dq / 10.0, qmax + dq / 10.0])
     plt.ylim([min(phi), max(phi)])
 
     plt.show()
@@ -196,76 +207,5 @@ def _drawOA(qmin, qmax, coeff, cutbelow, cutabove, title, arctype, points=[]):
 
 def test():
     """Test OA."""
-    cbelow, cabove = pumpcuts(0, 179, [101.055222, 0.0, -0.000835], 'TestPump', epsilon=1e-1, drawgraph=True)
-    cbelow, cabove = pipecuts(0, 179, [0.000835, 0], 'TestPipe', epsilon=1e-1, drawgraph=True)
-
-
-
-############################## dead code
-
-def _pipescutabovedichotomy(epsilon, qmin, qmax, coeff):
-    """Compute tangents to the pipe head loss function phi/coeff by dichotomy.
-
-    Tangents (f_i)_[1,n] for (q_i)_[1,n] are defined by dichotomy over [q_a=q_1, q_b=q_n] with
-    q_1 = qmin, q_n = min (qmax, qmax(1-sqrt(2))),
-    while f_{i-1}((q_a+q_b)/2) - phi((q_a+q_b)/2) > epsilon.
-    Remark: q in argmax_{q_a < q < q_b} (f_i(q) - phi(q))  <=> q = (q_a+q_b)/2 and f_a(q)=f_b(q)
-
-    Args:
-        epsilon (float): maximum distance between the tangent set and the curve.
-        qmin (float): minimum flow.
-        qmax (float): maximum flow.
-        coeff (list): coefficients of the head loss polynomial function.
-
-    Returns:
-        cutabove (list): list of the coefficients of the tangent linear function.
-
-    """
-    cutabove = []
-    qsup = qmax*(1-sqrt(2))
-    if qmin >= qsup:
-        cutabove.append(chord(qmin, qmax, hlossval, coeff))
-    else:
-        qsup = min(qmax, qsup)
-        linmin = hlosstangent(qmin, coeff)
-        cutabove.append(linmin)
-        _cutdichotomy(cutabove, epsilon, qmin, linmin, qsup, coeff)
-        linsup = hlosstangent(qsup, coeff)
-        cutabove.append(linsup)
-    return cutabove
-
-
-def _pipescutbelowdichotomy(epsilon, qmin, qmax, coeff):
-    cutbelow = []
-    qinf = qmin*(1-sqrt(2))
-    if qmax <= qinf:
-        cutbelow.append(chord(qmin, qmax, hlossval, coeff))
-    else:
-        qinf = max(qmin, qinf)
-        lininf = hlosstangent(qinf, coeff)
-        cutbelow.append(lininf)
-        _cutdichotomy(cutbelow, epsilon, qinf, lininf, qmax, coeff)
-        linmax = hlosstangent(qmax, coeff)
-        cutbelow.append(linmax)
-    return cutbelow
-
-def _cutdichotomy(cuts, epsilon, qmin, linmin, qmax, coeff):
-    q = (qmin + qmax)/2
-    if (abs(linmin[0] + linmin[1]*q - hlossval(q, coeff)) > epsilon):
-        lin = hlosstangent(q, coeff)
-        _cutdichotomy(cuts, epsilon, qmin, linmin, q, coeff)
-        cuts.append(lin)
-        print(f"cut at {q}")
-        _cutdichotomy(cuts, epsilon, q, lin, qmax, coeff)
-
-
-def pipecutsdichotomy(qmin, qmax, coeff, pipe, epsilon, drawgraph=True):
-    print(f"OA of pipe {pipe} ******************************************************")
-    cutabove = _pipescutabovedichotomy(epsilon, qmin, qmax, coeff)
-    print(f"{len(cutabove)} cuts above")
-    cutbelow = _pipescutbelowdichotomy(epsilon, qmin, qmax, coeff)
-    print(f"{len(cutbelow)} cuts below")
-    if drawgraph:
-        _drawOA(qmin, qmax, coeff, cutbelow, cutabove, pipe, 'PIPE')
-        plt.show()
-    return cutbelow, cutabove
+    pumpcuts(0, 179, [101.055222, 0.0, -0.000835], 'TestPump', epsilon=1e-1, drawgraph=True)
+    pipecuts(0, 179, [0.000835, 0], 'TestPipe', epsilon=1e-1, drawgraph=True)

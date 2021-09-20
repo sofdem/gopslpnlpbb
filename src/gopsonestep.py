@@ -31,14 +31,14 @@ def drawpoints(inst, model, realflow, realhead, title):
         points.append({'x': realflow[(i,j)], 'y': realhead[i] - realhead[j], 'fmt': 'go'})
         points.append({'x': model._qvar[(i,j)].x, 'y': model._hvar[i].x - model._hvar[j].x, 'fmt': 'ro'})
         coeff = [pipe.hloss[2], pipe.hloss[1]]
-        oa._drawOA(pipe.qmin, pipe.qmax, coeff, model._oa[(i,j)][0], model._oa[(i,j)][1], f'({i}, {j}) {title}', 'PIPE', points)
+        oa._draw_oa(pipe.qmin, pipe.qmax, coeff, model._oa[(i, j)][0], model._oa[(i, j)][1], f'({i}, {j}) {title}', 'PIPE', points)
     for (i,j), pump in inst.pumps.items():
         if (i != 'R3'):
             continue
         points = []
         points.append({'x': realflow[(i,j)], 'y': realhead[j] - realhead[i], 'fmt': 'go'})
         points.append({'x': model._qvar[(i,j)].x, 'y': model._hvar[j].x - model._hvar[i].x, 'fmt': 'ro'})
-        oa._drawOA(pump.qmin, pump.qmax, pump.hgain, model._oa[(i,j)][0], model._oa[(i,j)][1], f'({i}, {j}) {title}', 'PUMP', points)
+        oa._draw_oa(pump.qmin, pump.qmax, pump.hgain, model._oa[(i, j)][0], model._oa[(i, j)][1], f'({i}, {j}) {title}', 'PUMP', points)
 
 def solveonestep(instance, t, binstring, activity, volinit, headinit, network, epsilon, mipgap):
 

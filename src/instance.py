@@ -11,8 +11,17 @@ import pandas as pd
 import datetime as dt
 from pathlib import Path
 
-
 TARIFF_COLNAME = 'elix'
+ROUND = 6
+
+
+def myround(val: float) -> float:
+    return round(val, ROUND)
+
+
+def myfloat(val: str) -> float:
+    return myround(float(val))
+
 
 def update_min(oldlb: float, newlb: float) -> float:
     """Update lower bound only if better: returns max(oldlb, newlb)."""
@@ -20,6 +29,7 @@ def update_min(oldlb: float, newlb: float) -> float:
         print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
         return oldlb
     return newlb
+
 
 def update_max(oldub: float, newub: float) -> float:
     """Update upper bound only if better: returns min(oldub, newub)."""
@@ -37,7 +47,7 @@ class _Node:
         self.coord = {'x': x, 'y': y, 'z': z}
 
     def altitude(self):
-        return round(self.coord['z'], 2)
+        return self.coord['z']
 
 
 class _Tank(_Node):
@@ -51,10 +61,10 @@ class _Tank(_Node):
 
     def __init__(self, id_, x, y, z, vmin, vmax, vinit, surface):
         _Node.__init__(self, id_, x, y, z)
-        self.vmin = round(vmin, 2)
-        self.vmax = round(vmax, 2)
-        self.vinit = round(vinit, 2)
-        self.surface = round(surface, 2)
+        self.vmin = vmin
+        self.vmax = vmax
+        self.vinit = vinit
+        self.surface = surface
 
     def head(self, volume):
         return self.altitude() + volume / self.surface
@@ -75,12 +85,14 @@ class _Junction(_Node):
         self.dmean = dmean
         self.profileid = profileid
         self.dprofile = None
+        self.demands = None
 
     def setprofile(self, profile):
         self.dprofile = profile[self.profileid]
+        self.demands = [myround(self.dmean * p) for p in self.dprofile]
 
     def demand(self, t):
-        return self.dmean * self.dprofile[t]
+        return self.demands[t]
 
 
 class _Reservoir(_Node):
@@ -98,12 +110,14 @@ class _Reservoir(_Node):
         self.drawcost = drawcost
         self.profileid = profileid
         self.hprofile = None
+        self.heads = None
 
     def setprofile(self, profile):
         self.hprofile = profile[self.profileid]
+        self.heads = [myround(self.altitude() * p) for p in self.hprofile]
 
     def head(self, t):
-        return self.altitude() * self.hprofile[t]
+        return self.heads[t]
 
 
 class _Arc:
@@ -165,6 +179,7 @@ class _Valve(_Arc):
     def __str__(self):
         return f'V{self.id} [{self.qmin}, {self.qmax}] {self.type} [{self.hlossmin}, {self.hlossmax}]'
 
+
 class _Pump(_Arc):
     """Network arc of type pump.
 
@@ -177,7 +192,7 @@ class _Pump(_Arc):
         _Arc.__init__(self, id_, nodes, qmin, qmax)
         self.type = type_
         self.hgain = hgain
-        self.power = power #[round(p, 6) for p in power]
+        self.power = power
         self.offdhmin = offdhmin
         self.offdhmax = offdhmax
         if type_ == 'VSD':
@@ -192,9 +207,11 @@ class _Pump(_Arc):
         return self.power[0] + self.power[1] * q if q else 0
 
     def __str__(self):
-        return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hgain} {self.power} {self.type} [{self.offdhmin}, {self.offdhmax}]'
+        return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hgain} {self.power} {self.type} ' \
+               f'[{self.offdhmin}, {self.offdhmax}]'
 
 
+# noinspection PyUnresolvedReferences
 class Instance:
     """Instance of the Pump Scheduling Problem."""
 
@@ -202,38 +219,49 @@ class Instance:
     BNDSDIR = Path("../bounds/")
 
     def __init__(self, name, profilename, starttime, endtime, aggregatesteps):
-        self.name        = name
-        self.tanks       = self._parse_tanks('Reservoir.csv', self._parse_initvolumes('History_V_0.csv'))
-        self.junctions   = self._parse_junctions('Junction.csv')
-        self.reservoirs     = self._parse_reservoirs('Source.csv')
-        self.pumps       = self._parse_pumps('Pump.csv')
-        self.pipes       = self._parse_pipes('Pipe.csv')
-        self.valves      = self._parse_valves('Valve_Set.csv')
+        self.name = name
+        self.tanks = self._parse_tanks('Reservoir.csv', self._parse_initvolumes('History_V_0.csv'))
+        self.junctions = self._parse_junctions('Junction.csv')
+        self.reservoirs = self._parse_reservoirs('Source.csv')
+        self.pumps = self._parse_pumps('Pump.csv')
+        self.pipes = self._parse_pipes('Pipe.csv')
+        self.valves = self._parse_valves('Valve_Set.csv')
 
-        self.arcs        = self._getarcs()
-        self.nodes       = self._getnodes()
-        self.incidence   = self._getincidence()
+        self.arcs = self._getarcs()
+        self.nodes = self._getnodes()
+        self.incidence = self._getincidence()
 
         periods, profiles = self._parse_profiles(f'{profilename}.csv', starttime, endtime, aggregatesteps)
-        self.periods     = periods
-        self.profiles    = profiles
-        self.tariff      = profiles[TARIFF_COLNAME]
-        self.tsduration  = self._get_timestepduration(periods)
+        self.periods = periods
+        self.profiles = profiles
+        self.tariff = profiles[TARIFF_COLNAME]
+        self.tsduration = self._get_timestepduration(periods)
 
         self.dependencies = self._dependencies()
-        self.symmetries   = self._pump_symmetric()
+        self.symmetries = self._pump_symmetric()
 
         for r in self.reservoirs.values():
             r.setprofile(profiles)
         for j in self.junctions.values():
             j.setprofile(profiles)
 
-    def nperiods(self): return len(self.periods) - 1
-    def horizon(self): return range(self.nperiods())
-    def tsinhours(self): return self.tsduration.total_seconds() / 3600      # in hour
-    def eleccost(self, t): return self.tsinhours() * self.tariff[t] / 1000  # in euro/W
-    def inarcs(self, node): return self.incidence[node, 'in']
-    def outarcs(self, node): return self.incidence[node, 'out']
+    def nperiods(self):
+        return len(self.periods) - 1
+
+    def horizon(self):
+        return range(self.nperiods())
+
+    def tsinhours(self):
+        return self.tsduration.total_seconds() / 3600  # in hour
+
+    def eleccost(self, t):
+        return self.tsinhours() * self.tariff[t] / 1000  # in euro/W
+
+    def inarcs(self, node):
+        return self.incidence[node, 'in']
+
+    def outarcs(self, node):
+        return self.incidence[node, 'out']
 
     #  PARSERS
 
@@ -243,45 +271,45 @@ class Instance:
         data = [[x.strip() for x in row] for row in rows]
         return data
 
-
     def _parse_initvolumes(self, filename):
         data = self._parsecsv(filename)
-        return {A[0]: float(A[1]) for A in data[1:]}
+        return {A[0]: myfloat(A[1]) for A in data[1:]}
 
     def _parse_pumps(self, filename):
         data = self._parsecsv(filename)
         return dict({(A[1], A[2]): _Pump(A[0], (A[1], A[2]),
-                                         [round(float(A[c]), 6) for c in [5, 4, 3]],
-                                         [round(float(A[c]), 6) for c in [7, 6]],
-                                         float(A[8]), float(A[9]),
-                                         float(A[11]), float(A[10]), # !!! inverse Min-Max !
+                                         [myfloat(A[c]) for c in [5, 4, 3]],
+                                         [myfloat(A[c]) for c in [7, 6]],
+                                         myfloat(A[8]), myfloat(A[9]),
+                                         myfloat(A[11]), myfloat(A[10]),  # !!! inverse Min-Max !
                                          A[12]) for A in data[1:]})
 
     def _parse_valves(self, filename):
         data = self._parsecsv(filename)
-        return dict({(A[1], A[2]): _Valve(A[0], (A[1], A[2]), A[3], float(A[4]), float(A[5]),
-                                          float(A[6]), float(A[7])) for A in data[1:]})
+        return dict({(A[1], A[2]): _Valve(A[0], (A[1], A[2]), A[3],
+                                          myfloat(A[4]), myfloat(A[5]),
+                                          myfloat(A[6]), myfloat(A[7])) for A in data[1:]})
 
     def _parse_pipes(self, filename):
         data = self._parsecsv(filename)
-        return dict({(A[1], A[2]): _Pipe(A[0], (A[1], A[2]), [0, float(A[4]), float(A[3])],
-                                         float(A[5]), float(A[6])) for A in data[1:]})
+        return dict({(A[1], A[2]): _Pipe(A[0], (A[1], A[2]), [0, myfloat(A[4]), myfloat(A[3])],
+                                         myfloat(A[5]), myfloat(A[6])) for A in data[1:]})
 
     def _parse_junctions(self, filename):
         data = self._parsecsv(filename)
-        return dict({A[0]: _Junction(A[0], float(A[1]), float(A[2]),
-                                     float(A[3]), float(A[4]), A[5]) for A in data[1:]})
+        return dict({A[0]: _Junction(A[0], myfloat(A[1]), myfloat(A[2]),
+                                     myfloat(A[3]), myfloat(A[4]), A[5]) for A in data[1:]})
 
     def _parse_reservoirs(self, filename):
         data = self._parsecsv(filename)
-        return dict({A[0]: _Reservoir(A[0], float(A[1]), float(A[2]), float(A[3]),
-                                   A[4], A[5], float(A[6])) for A in data[1:]})
+        return dict({A[0]: _Reservoir(A[0], myfloat(A[1]), myfloat(A[2]), myfloat(A[3]),
+                                      A[4], A[5], myfloat(A[6])) for A in data[1:]})
 
     def _parse_tanks(self, filename, initvolumes):
         data = self._parsecsv(filename)
-        return dict({A[0]: _Tank(A[0], float(A[1]), float(A[2]), float(A[3]),
-                                      float(A[4]), float(A[5]), initvolumes[A[0]],
-                                      float(A[6])) for A in data[1:]})
+        return dict({A[0]: _Tank(A[0], myfloat(A[1]), myfloat(A[2]), myfloat(A[3]),
+                                 myfloat(A[4]), myfloat(A[5]), initvolumes[A[0]],
+                                 myfloat(A[6])) for A in data[1:]})
 
     def _parse_profiles(self, filename, starttime, endtime, aggsteps):
         data = self._parsecsv(filename)
@@ -297,13 +325,12 @@ class Instance:
         periods = []
         while i < len(data) and data[i][0] != endtime:
             for j, n in enumerate(profilename):
-                profiles[n].append(float(data[i][j+1]))
+                profiles[n].append(float(data[i][j + 1]))
             periods.append(dt.datetime.strptime(data[i][0], '%d/%m/%Y %H:%M'))
             i += aggsteps
         assert i < len(data), f'end time {endtime} not found in {filename}'
         periods.append(dt.datetime.strptime(endtime, '%d/%m/%Y %H:%M'))
         return periods, profiles
-
 
     def _parse_profiles_aggregate(self, filename, starttime, endtime, aggsteps):
         data = self._parsecsv(filename)
@@ -316,7 +343,7 @@ class Instance:
         profilename = data[0][1:]
         profiles = {n: [] for n in profilename}
         periods = []
-        sumagg = [0 for n in profilename]
+        sumagg = [0 for _ in profilename]
         cntagg = 0
         while i < len(data) and data[i][0] != endtime:
             i += 1
@@ -328,14 +355,15 @@ class Instance:
                     periods.append(dt.datetime.strptime(data[i][0], '%d/%m/%Y %H:%M'))
             cntagg += 1
             for j, s in enumerate(sumagg):
-                sumagg[j] += float(data[i][j+1])
+                sumagg[j] += float(data[i][j + 1])
         assert i < len(data), f'{filename}: not found end {endtime}'
         return periods, profiles
 
-    def _get_timestepduration(self, periods):
+    @staticmethod
+    def _get_timestepduration(periods):
         duration = periods[1] - periods[0]
-        for i in range(len(periods)-1):
-            assert duration == periods[i+1] - periods[i]
+        for i in range(len(periods) - 1):
+            assert duration == periods[i + 1] - periods[i]
         return duration
 
     # !!! inverse the dh bounds for pumps in the hdf file
@@ -344,16 +372,19 @@ class Instance:
         """Parse bounds in the hdf file."""
         file = Path(Instance.BNDSDIR, filename if filename else self.name)
         bounds = pd.read_hdf(file.with_suffix('.hdf'), encoding='latin1').to_dict()
+        tol = 1e-6
         for i, b in bounds.items():
+            a = (i[0][0].replace('Tank ', 'T'), i[0][1].replace('Tank ', 'T'))
+            arc = self.arcs[a]
+            b0 = myround(b[0])
+            b1 = myround(b[1])
             if i[1] == 'flow':
-                if i[0] in self.arcs:
-                    self.arcs[i[0]].update_qbounds(b[0]-1e-2, b[1]+1e-2)
+                arc.update_qbounds(b0 - tol, b1 + tol)
             elif i[1] == 'head':
-                if i[0] in self.pumps:
-                    self.arcs[i[0]].update_hbounds(b[1]-1e-2, b[0]+1e-2)
-                elif i[0] in self.valves:
-                    self.arcs[i[0]].update_hbounds(b[0]-1e-2, b[1]+1e-2)
-
+                if a in self.pumps:
+                    arc.update_hbounds(b1 - tol, b0 + tol)
+                else:  # if a in self.valves:
+                    arc.update_hbounds(b0 - tol, b1 + tol)
 
     def _getarcs(self):
         arcs = dict(self.pumps)
@@ -361,13 +392,11 @@ class Instance:
         arcs.update(self.pipes)
         return arcs
 
-
     def _getnodes(self):
         nodes = dict(self.junctions)
         nodes.update(self.tanks)
         nodes.update(self.reservoirs)
         return nodes
-
 
     def _getincidence(self):
         incidence = {}
@@ -381,7 +410,6 @@ class Instance:
                     incidence[node, 'out'].add(arc)
         return incidence
 
-
     def pumps_without_sym(self):
         """Aggregate symmetric pumps as a fictional 'sym' pump."""
         uniquepumps = set(self.pumps.keys())
@@ -390,7 +418,6 @@ class Instance:
             uniquepumps -= set(symgroup)
             uniquepumps.add('sym')
         return sorted(uniquepumps, key=str)
-
 
     def _pump_symmetric(self):
         """Return a list of symmetric pumps."""
@@ -404,7 +431,6 @@ class Instance:
             return [('Arguenon_IN_1', 'Arguenon_OUT'), ('Arguenon_IN_2', 'Arguenon_OUT'),
                     ('Arguenon_IN_3', 'Arguenon_OUT'), ('Arguenon_IN_4', 'Arguenon_OUT')]
         return []
-
 
     def _dependencies(self):
         """Return 4 types of control dependencies as a dict of lists of dependent pumps/valves."""
@@ -426,14 +452,11 @@ class Instance:
 
         return dep
 
-
     def tostr_basic(self):
         return f'{self.name} {self.periods[0]} {self.horizon()}'
 
-
     def tostr_network(self):
         return f'{len(self.pumps)} pumps, {len(self.valves)} valves, {len(self.tanks)} tanks'
-
 
     def print_all(self):
         print(f'{self.tostr_basic()} {self.tostr_network()}')
@@ -442,18 +465,16 @@ class Instance:
             print(i)
             print(str(a))
 
-
     def transcript_bounds(self, csvfile):
         """Parse bounds in the hdf file."""
         file = Path(Instance.BNDSDIR, self.name)
         pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
-
 
     def parsesolution(self, filename):
         csvfile = open(filename)
         rows = csv.reader(csvfile, delimiter=',')
         data = [[x.strip() for x in row] for row in rows]
         csvfile.close()
-        assert float(data[0][1]) == self.nperiods(), f"wrong solution file {data[0]} for instance {self.tostr_basic()}: different horizons"
-        inactive = {t: set((A[0],A[1]) for A in data[1:] if A[t+2] == '0') for t in self.horizon()}
+        assert float(data[0][1]) == self.nperiods(), f"different horizons in {data[0]} and {self.tostr_basic()}"
+        inactive = {t: set((A[0], A[1]) for A in data[1:] if A[t + 2] == '0') for t in self.horizon()}
         return inactive
