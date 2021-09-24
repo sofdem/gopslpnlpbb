@@ -11,17 +11,18 @@ bounds are read from a file (.hdf)
 """
 
 from instance import Instance
-from datetime import date
+from datetime import datetime
 import convexrelaxation as rel
 import lpnlpbb as bb
-# import sys
+import csv
 import graphic
 from hydraulics import HydraulicNetwork
 from pathlib import Path
 from stats import Stat
+import os
 
-EPSILON = 1e-2
-MIPGAP = 1e-6
+OA_GAP = 1e-2
+MIP_GAP = 1e-6
 
 BENCH = {
     'FSD': {'ntk': 'Simple_Network', 'D0': 1, 'H0': '/01/2013 00:00'},
@@ -57,10 +58,30 @@ FASTBENCH = [
 ]
 
 OUTDIR = Path("../output/")
+defaultfilename = Path(OUTDIR, f'resall.csv')
 
 
-# possible modes are: None, 'CVX' (solve MIP relaxation), 'SOLVE' (run adjustemnt heur), 'CUT' (cut with adjustment heur),
-def solve(instance, epsilon, mipgap, mode, drawsolution, stat=None, pumpvals=None):
+# RECORD (default: gurobi manages incumbent), FATHOM (cut feas int nodes) or CVX (MIP relaxation only)
+# NOADJUST (default: no adjustment heuristic), ADJUST (run heur) or ADJUSTNCUT (cut with heur solutions)
+MODES = {"solve": ['RECORD', 'FATHOM', 'CVX'],
+         "adjust": ['NOADJUST', 'ADJUST', 'ADJUSTNCUT']}
+
+
+def parsemode(modes):
+    pm = {k: mk[0] for k, mk in MODES.items()}
+    if modes is None:
+        return pm
+    elif type(modes) is str:
+        modes = [modes]
+    for k, mk in MODES.items():
+        for mode in mk:
+            if mode in modes:
+                pm[k] = mode
+                break
+    return pm
+
+
+def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print('***********************************************')
     print(instance.tostr_basic())
     print(instance.tostr_network())
@@ -70,74 +91,111 @@ def solve(instance, epsilon, mipgap, mode, drawsolution, stat=None, pumpvals=Non
         instance.parse_bounds()
     except UnicodeDecodeError as err:
         print(f'obbt bounds not read: {err}')
+    # instance.print_all()
 
     print("create model")
-    cvxmodel = rel.build_model(instance, epsilon, pumpvals=pumpvals)
+    cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
     # cvxmodel.write('convrel.lp')
     cvxmodel.params.MIPGap = mipgap
     cvxmodel.params.timeLimit = 3600
     # cvxmodel.params.OutputFlag = 0
-    # cvxmodel.params.Threads = 1
+    cvxmodel.params.Threads = 1
     # cvxmodel.params.FeasibilityTol = 1e-5
 
     print("solve model")
-    costreal = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if mode == 'CVX' \
-        else bb.lpnlpbb(cvxmodel, instance, drawsolution=drawsolution, adjust_mode=mode)
+    costreal = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
+        else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
 
-    if not stat:
-        stat = Stat(mode)
     stat.fill(cvxmodel, costreal)
     print('***********************************************')
     print(f"solution for {instance.tostr_basic()}")
     print(stat.tostr_basic())
 
     cvxmodel.terminate()
-    return stat
 
 
-def solvebench(bench, epsilon=EPSILON, mipgap=MIPGAP, mode='CUT', drawsolution=False):
-    stat = Stat(mode)
-    now = date.today().strftime("%y%m%d")
-    resfilename = Path(OUTDIR, f'res{now}-{mode}.csv')
-    f = open(resfilename, 'w')
-    f.write(
-        f"gops, {now}, epsilon={epsilon}, mipgap={mipgap}, mode={mode}, non-valid lbs if nogood cuts at feas nodes\n")
-    f.write(f'ntk T day, {stat.tocsv_title()}\n')
+def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=True, stat=None, file=defaultfilename):
+    instance = makeinstance(instid)
+    stat = Stat(parsemode(modes)) if stat is None else stat
+    solve(instance, oagap, mipgap, drawsolution, stat)
+    now = datetime.now().strftime("%y%m%d-%H%M")
+    fileexists = os.path.exists(file)
+    f = open(file, 'a')
+    if not fileexists:
+        f.write(f"date, oagap, mipgap, mode, ntk T day, {stat.tocsv_title()}\n")
+    f.write(f"{now}, {oagap}, {mipgap}, {stat.getsolvemode()}, {instid}, {stat.tocsv_basic()}\n")
     f.close()
 
+
+def solvebench(bench, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=False):
+    stat = Stat(parsemode(modes))
+    now = datetime.now().strftime("%y%m%d-%H%M")
+    resfilename = Path(OUTDIR, f'res{now}.csv')
     for i in bench:
-        instance = makeinstance(i)
-
-        stat = solve(instance, epsilon, mipgap, mode, drawsolution, stat)
-
-        f = open(resfilename, 'a')
-        f.write(f"{i}, {stat.tocsv_basic()}\n")
-        f.close()
+        solveinstance(i, oagap=oagap, mipgap=mipgap, drawsolution=drawsolution, stat=stat, file=resfilename)
 
 
-def solveinstance(instid, epsilon=EPSILON, mipgap=MIPGAP, mode='CUT', drawsolution=True):
-    instance = makeinstance(instid)
-    solve(instance, epsilon, mipgap, mode, drawsolution)
-
-
-def testsolution(instid, solfilename, epsilon=EPSILON, mipgap=MIPGAP, mode='CVX', drawsolution=True):
+def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
     instance = makeinstance(instid)
     inactive = instance.parsesolution(solfilename)
-    network = HydraulicNetwork(instance, feastol=1e-6)
+    network = HydraulicNetwork(instance, feastol=mipgap)
     flow, hreal, volume, violations = network.extended_period_analysis(inactive, stopatviolation=False)
     cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
                                           for a, pump in instance.pumps.items() if a not in inactive[t])
                for t in instance.horizon())
-
     print(f'real plan cost (without draw cost) = {cost}')
     graphic.pumps(instance, flow)
     graphic.tanks(instance, flow, volume)
 
-    arcvals = {(a, t): 0 if a in inactive[t] else 1 for a in instance.pumps for t in instance.horizon()}
-    solve(instance, epsilon, mipgap, mode, drawsolution=drawsolution, pumpvals=arcvals)
+    stat = Stat(parsemode(modes))
+    arcvals = {(a, t): 0 if a in inactive[t] else 1 for a in instance.varcs for t in instance.horizon()}
+    solve(instance, oagap, mipgap, drawsolution, stat, arcvals=arcvals)
 
 
-# solveinstance('FSD s 24 1', mode='')
-# solveinstance('RIC s 12 3', mode='CUT')
+def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
+    csvfile = open(solfilename)
+    rows = csv.reader(csvfile, delimiter=',')
+    data = [[float(x.strip()) for x in row] for row in rows]
+    csvfile.close()
+
+    print('************ TEST SOLUTIONS ***********************************')
+    instance = makeinstance(instid)
+    print(instance.tostr_basic())
+    print(instance.tostr_network())
+
+    print("obbt: parse bounds")
+    try:
+        instance.parse_bounds()
+    except UnicodeDecodeError as err:
+        print(f'obbt bounds not read: {err}')
+
+    stat = Stat(parsemode(modes))
+    print("create model")
+    for i, d in enumerate(data):
+        print(f"create model {i}")
+        cvxmodel = rel.build_model(instance, oagap)
+        rel.postsolution(cvxmodel, d)
+        cvxmodel.params.MIPGap = mipgap
+        cvxmodel.params.timeLimit = 1200
+        # cvxmodel.params.FeasibilityTol = mipgap
+        # network = HydraulicNetwork(instance, feastol=feastol)
+        # cvxmodel.write("sd.lp")
+
+        print("solve model")
+        costreal = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
+            else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
+
+        stat.fill(cvxmodel, costreal)
+        print('***********************************************')
+        print(f"solution for {instance.tostr_basic()}")
+        print(stat.tostr_basic())
+
+        cvxmodel.terminate()
+
+
+solveinstance('FSD s 48 1', modes='', drawsolution=False)
+# solveinstance('RIC s 12 3', modes='CUT')
 # testsolution('RIC s 12 1', "sol.csv")
-solvebench(FASTBENCH[:7], mode='')
+# testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
+
+# solvebench(FASTBENCH[:7], modes=None)

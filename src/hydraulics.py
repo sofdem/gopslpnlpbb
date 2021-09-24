@@ -12,47 +12,30 @@ from copy import deepcopy
 
 NEWTON_TOL = 1e-8
 
-
+# TODO merge with instance
 class HydraulicNetwork:
-    """An alternative view of the water network with aggregated valves."""
+    """An alternative view of the water network."""
 
     def __init__(self, instance: inst.Instance, feastol: float):
         """Create an HydraulicNetwork from an Instance."""
         self.instance = instance
         self.feastol = feastol
-        self.arcs, self.incidence, self.aggregate = self._aggregate(instance)
+        self.arcs, self.incidence = self._build_incidence(instance)
+        self.removed_nodes = {}
         assert self._check_network(self.incidence)
 
     @staticmethod
-    def _aggregate(instance):
-        """Get the network with valves aggregated to the preceding pipes."""
+    def _build_incidence(instance):
+        """Get the incidence matrix."""
         arcs = {}
         incidence = {n: set() for n in instance.nodes}
-        aggregate = {}
 
-        for (i, j), pump in instance.pumps.items():
-            arcs[(i, j)] = [-h for h in pump.hgain]
+        for (i, j), arc in instance.arcs.items():
+            arcs[(i, j)] = [h for h in arc.hloss]
             incidence[i].add((i, j))
             incidence[j].add((i, j))
 
-        # !!!  aggregate pipes to valves rather than the opposite
-        for (i, j), pipe in instance.pipes.items():
-            outvalves = [v for v in instance.outarcs(j) if instance.valves.get(v)]
-            assert len(outvalves) < 2, f'several valves after pipe {(i, j)}: {outvalves}'
-            newj = j
-            if len(outvalves) == 1:
-                valve = outvalves[0]
-                newj = valve[1]
-                aggregate[(i, newj)] = [(i, j), valve]
-                aggregate[valve] = (i, newj)
-                assert (not incidence[j]), f'impossible to aggregate {(i, j)} + {valve}'
-                del incidence[j]
-                # print("aggregate ", (i, j), ' + ', valve)
-            arcs[(i, newj)] = [h for h in pipe.hloss]
-            incidence[i].add((i, newj))
-            incidence[newj].add((i, newj))
-
-        return arcs, incidence, aggregate
+        return arcs, incidence
 
     def _check_network(self, incidence):
         check = True
@@ -83,13 +66,10 @@ class HydraulicNetwork:
         """Remove the inactive pumps and valves then the non-demand leaf nodes, recursively."""
         arcs = deepcopy(self.arcs)
         incidence = deepcopy(self.incidence)
+        self.removed_nodes = {}
 
         leavestoremove = set()
         for (i, j) in inactive:
-            aggreg = self.aggregate.get((i, j))
-            if aggreg:
-                assert aggreg[1] == j, f'valve = {(i, j)}, aggregate = {aggreg}'
-                i = aggreg[0]
             del arcs[(i, j)]
             if self._remove_arc_from_junction(i, (i, j), incidence):
                 leavestoremove.add(i)
@@ -98,13 +78,13 @@ class HydraulicNetwork:
 
         while leavestoremove:
             leaf = leavestoremove.pop()
-            # !!! it is possible that leaf has already been droped: replace assert by condition
             assert incidence.get(leaf), f'node {leaf} has already been removed'
             assert len(incidence[leaf]) == 1, f'{leaf} not a leaf: {incidence[leaf]}'
             branch = incidence[leaf].pop()
             del incidence[leaf]
             del arcs[branch]
             altj = branch[1] if (branch[0] == leaf) else branch[0]
+            self.removed_nodes[leaf] = (branch, altj)
             if self._remove_arc_from_junction(altj, branch, incidence):
                 leavestoremove.add(altj)
 
@@ -157,25 +137,45 @@ class HydraulicNetwork:
 
         arcs, incidence = self.active_network(inactive)
         nodeindex, q, H0, A21, A12, A10 = self.build_matrices(arcs, incidence, period, volumes)
-        Q, H = todini_pilati(arcs, q, H0, A21, A12, A10)
+        Q, H = self.todini_pilati(arcs, q, H0, A21, A12, A10)
 
         flow = {a: 0 for a in self.instance.arcs}
         head = {n: 0 for n in self.instance.nodes}
 
-        for j, arc in enumerate(arcs):
-            aggreg = self.aggregate.get(arc)
-            if aggreg:
-                flow[aggreg[0]] = Q[j][0]
-                flow[aggreg[1]] = Q[j][0]
-            else:
-                flow[arc] = Q[j][0]
-                if abs(Q[j][0]) < 1e-6:
-                    print(f'null flow {Q[j][0]} for active element {arc}')
-
         for node, (isDemand, i) in nodeindex.items():
             head[node] = H[i][0] if isDemand else H0[i][0]
 
+        for k, ((i, j), arc) in enumerate(arcs.items()):
+            flow[(i, j)] = Q[k][0]
+            assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
+            assert self.check_bounds((i, j), flow[(i, j)]), f'qbnds a=({i},{j}) t={period}'
+
+        # recover the head at removed nodes
+        for leaf, (branch, altj) in self.removed_nodes.items():
+            assert head[leaf] == 0 and flow[branch] == 0 and (branch not in self.instance.pumps)
+            head[leaf] = head[altj]
+
         return flow, head
+
+    def check_hloss(self, arc, q, hi, hj):
+        ok = True
+        hlossval = (arc[2]*abs(q) + arc[1])*q + arc[0]
+        if abs(hlossval-hi+hj) > self.feastol:
+            ok = False
+            print(f"q={q}: {hlossval} != {hi} - {hj} = {hi-hj}")
+        return ok
+
+    def check_bounds(self, arc, q):
+        ok = True
+        qmin = self.instance.arcs[arc].qmin
+        if q < self.instance.arcs[arc].qmin - self.feastol:
+            ok = False
+            print(f"violated flow arc bound ! q={q} < qmin={qmin}")
+        qmax = self.instance.arcs[arc].qmax
+        if q > self.instance.arcs[arc].qmax + self.feastol:
+            ok = False
+            print(f"violated flow arc bound ! q={q} > qmax={qmax}")
+        return ok
 
     def extended_period_analysis(self, inactive: dict, stopatviolation=True):
         """Run flow analysis progressively on each time period."""
@@ -203,36 +203,38 @@ class HydraulicNetwork:
                     if stopatviolation:
                         return flow, head, volumes, violations
 
+        head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
             if volumes[nperiods][i] < tank.vinit - self.feastol:
                 violations.append((nperiods, i, volumes[nperiods][i]))
                 if stopatviolation:
                     return flow, head, volumes, violations
+            head[nperiods][i] = tank.head(volumes[nperiods][i])
 
         return flow, head, volumes, violations
 
 
-def todini_pilati(arcs, q, H0, A21, A12, A10):
-    """Apply the Todini Pilati algorithm of flow analysis, return flow and head."""
-    Id = np.identity(len(arcs))
-    Q = np.full((len(arcs), 1), 10)
-    H = np.zeros((1, len(q)))
+    def todini_pilati(self, arcs, q, H0, A21, A12, A10):
+        """Apply the Todini Pilati algorithm of flow analysis, return flow and head."""
+        Id = np.identity(len(arcs))
+        Q = np.full((len(arcs), 1), 10)
+        H = np.zeros((1, len(q)))
 
-    A11 = np.zeros((len(arcs), len(arcs)))
-    D = np.zeros((len(arcs), len(arcs)))
+        A11 = np.zeros((len(arcs), len(arcs)))
+        D = np.zeros((len(arcs), len(arcs)))
 
-    gap = 1
-    while gap > NEWTON_TOL:
-        Qold = np.copy(Q)
-        for i, (a, arc) in enumerate(arcs.items()):
-            A11[i][i] = arc[2] * abs(Q[i][0]) + arc[1] + arc[0] / Q[i][0]
-            D[i][i] = (2 * arc[2] * abs(Q[i][0]) + arc[1]) ** (-1)
+        gap = 1
+        while gap > NEWTON_TOL:
+            Qold = np.copy(Q)
+            for i, (a, arc) in enumerate(arcs.items()):
+                A11[i][i] = arc[2] * abs(Q[i][0]) + arc[1] + arc[0] / Q[i][0]
+                D[i][i] = (2 * arc[2] * abs(Q[i][0]) + arc[1]) ** (-1)
 
-        H = - np.linalg.inv(A21 @ D @ A12) @ (A21 @ D @ (A11 @ Q + A10 @ H0) + q - A21 @ Q)
-        Q = (Id - D @ A11) @ Q - D @ (A12 @ H + A10 @ H0)
+            H = - np.linalg.inv(A21 @ D @ A12) @ (A21 @ D @ (A11 @ Q + A10 @ H0) + q - A21 @ Q)
+            Q = (Id - D @ A11) @ Q - D @ (A12 @ H + A10 @ H0)
 
-        # !!! assert Q!=0 and Q[pump]>0
-        gap = sum(abs(Q[i][0] - Qold[i][0]) for i, arc in enumerate(arcs)) \
-            / sum(abs(Q[i][0]) for i, arc in enumerate(arcs))
+            # !!! assert Q!=0 and Q[pump]>0
+            gap = sum(abs(Q[i][0] - Qold[i][0]) for i, arc in enumerate(arcs)) \
+                / sum(abs(Q[i][0]) for i, arc in enumerate(arcs))
 
-    return Q, H
+        return Q, H

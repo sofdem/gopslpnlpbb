@@ -15,34 +15,24 @@ import datetime as dt
 
 # !!! check round values
 # noinspection PyArgumentList
-def build_model(inst: Instance, epsilon: float, pumpvals=None):
+def build_model(inst: Instance, oagap: float, arcvals=None):
     """Build the convex relaxation gurobi model."""
 
     milp = gp.Model('Pumping_Scheduling')
 
     qvar = {}  # arc flow
-    svar = {}  # pump/valve activity status
+    dhvar = {}  # arc hloss
+    svar = {}  # arc status
     ivar = {}  # pump ignition status
     hvar = {}  # node head
+    qexpr = {}  # node inflow
 
     nperiods = inst.nperiods()
     horizon = inst.horizon()
 
     for t in horizon:
-        for (i, j), pipe in inst.pipes.items():
-            qvar[(i, j), t] = milp.addVar(lb=pipe.qmin, ub=pipe.qmax, name=f'qp({i},{j},{t})')
-
-        for (i, j), valve in inst.valves.items():
-            qvar[(i, j), t] = milp.addVar(lb=valve.qmin, ub=valve.qmax, name=f'qv({i},{j},{t})')
-            svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'xv({i},{j},{t})')
-
         for (i, j), pump in inst.pumps.items():
             ivar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'ik({i},{j},{t})')
-            drawcost = 3.6 * inst.tsinhours() * inst.reservoirs[i].drawcost if i in inst.reservoirs else 0
-            qvar[(i, j), t] = milp.addVar(lb=0, ub=pump.qmax, obj=drawcost + inst.eleccost(t) * pump.power[1],
-                                          name=f'qk({i},{j},{t})')
-            svar[(i, j), t] = milp.addVar(obj=inst.eleccost(t) * pump.power[0], vtype=GRB.BINARY,
-                                          name=f'xk({i},{j},{t})')
 
         for j in inst.junctions:
             hvar[j, t] = milp.addVar(name=f'hj({j},{t})')
@@ -51,75 +41,67 @@ def build_model(inst: Instance, epsilon: float, pumpvals=None):
             hvar[j, t] = milp.addVar(lb=res.head(t), ub=res.head(t), name=f'hr({j},{t})')
 
         for j, tank in inst.tanks.items():
-            hvar[j, t] = milp.addVar(lb=tank.head(tank.vmin), ub=tank.head(tank.vmax), name=f'ht({j},{t})')
+            lbt = tank.head(tank.vinit) if t == 0 else tank.head(tank.vmin)
+            ubt = tank.head(tank.vinit) if t == 0 else tank.head(tank.vmax)
+            hvar[j, t] = milp.addVar(lb=lbt, ub=ubt, name=f'ht({j},{t})')
+
+        milp.update()
+
+        for (i, j), a in inst.arcs.items():
+
+            if a.control:
+                qvar[(i, j), t] = milp.addVar(lb=-GRB.INFINITY, name=f'q({i},{j},{t})')
+                dhvar[(i, j), t] = milp.addVar(lb=-GRB.INFINITY, name=f'H({i},{j},{t})')
+                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'x({i},{j},{t})')
+                # q_a=0 if x_a=0 otherwise in [qmin,qmax]
+                milp.addConstr(qvar[(i, j), t] <= a.qmax * svar[(i, j), t])
+                milp.addConstr(qvar[(i, j), t] >= a.qmin * svar[(i, j), t])
+                # dh_a = (h_i - h_j) * x_a
+                dhmin = max(a.hlossval(a.qmin), hvar[i, t].lb - hvar[j, t].ub)
+                dhmax = min(a.hlossval(a.qmax), hvar[i, t].ub - hvar[j, t].lb)
+                milp.addConstr(dhvar[(i, j), t] <= dhmax * svar[(i, j), t])
+                milp.addConstr(dhvar[(i, j), t] >= dhmin * svar[(i, j), t])
+                milp.addConstr(dhvar[(i, j), t] <= hvar[i, t] - hvar[j, t] - a.dhmin * (1-svar[(i, j), t]))
+                milp.addConstr(dhvar[(i, j), t] >= hvar[i, t] - hvar[j, t] - a.dhmax * (1-svar[(i, j), t]))
+
+            else:
+                qvar[(i, j), t] = milp.addVar(lb=a.qmin, ub=a.qmax, name=f'q({i},{j},{t})')
+                dhvar[(i, j), t] = milp.addVar(lb=a.hlossval(a.qmin), ub=a.hlossval(a.qmax), name=f'H({i},{j},{t})')
+                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, lb=1, name=f'x({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] == hvar[i, t] - hvar[j, t])
 
     for j, tank in inst.tanks.items():
         hvar[j, nperiods] = milp.addVar(lb=tank.head(tank.vinit), ub=tank.head(tank.vmax), name=f'ht({j},T)')
-        hvar[j, 0].lb = tank.head(tank.vinit)
-        hvar[j, 0].ub = tank.head(tank.vinit)
+
     milp.update()
 
-    # FLOW CONSERVATION (JUNCTIONS)
-    for j, junc in inst.junctions.items():
-        for t in horizon:
-            # !!! original code: round(demand,2)
+    # FLOW CONSERVATION
+    for t in horizon:
+        for j in inst.nodes:
+            qexpr[j, t] = gp.quicksum(qvar[a, t] for a in inst.inarcs(j)) - gp.quicksum(qvar[a, t] for a in inst.outarcs(j))
+
+        for j, junc in inst.junctions.items():
             milp.addConstr(gp.quicksum(qvar[a, t] for a in inst.inarcs(j))
                            - gp.quicksum(qvar[a, t] for a in inst.outarcs(j)) == junc.demand(t), name=f'fc({j},{t})')
 
-    # FLOW CONSERVATION (TANKS)
-    for j, tank in inst.tanks.items():
-        for t in horizon:
-            milp.addConstr(hvar[j, t + 1] - hvar[j, t] == 3.6 * inst.tsinhours() / tank.surface *
-                           (gp.quicksum(qvar[a, t] for a in inst.inarcs(j))
-                            - gp.quicksum(qvar[a, t] for a in inst.outarcs(j))), name=f'fc({j},{t})')
+        for j, tank in inst.tanks.items():
+            milp.addConstr(hvar[j, t+1] - hvar[j, t] == (3.6 * inst.tsinhours() / tank.surface) * qexpr[j, t], name=f'fc({j},{t})')
 
     # MAX WITHDRAWAL AT RESERVOIRS
     for j, res in inst.reservoirs.items():
         if res.drawmax:
-            milp.addConstr(3.6 * inst.tsinhours()
-                           * gp.quicksum(qvar[a, t] for a in inst.outarcs(j) for t in horizon)
-                           <= res.drawmax, name=f'w({j})')
+            milp.addConstr(res.drawmax + 3.6 * inst.tsinhours() * gp.quicksum(qexpr[j, t] for t in horizon), name=f'w({j})')
 
-    # VALVES
-    for (i, j), valve in inst.valves.items():
-        if valve.type == 'GV' or valve.type == 'PRV':
-            for t in horizon:
-                x = svar[(i, j), t] if (valve.type == 'GV') else (1 - svar[(i, j), t])
-                milp.addConstr(qvar[(i, j), t] <= valve.qmax * svar[(i, j), t], name=f'vu({i},{j},{t})')
-                milp.addConstr(qvar[(i, j), t] >= valve.qmin * x, name=f'vl({i},{j},{t})')
-                milp.addConstr(hvar[i, t] - hvar[j, t] >= valve.hlossmin * (1 - svar[(i, j), t]),
-                               name=f'hvl({i},{j},{t})')
-                milp.addConstr(hvar[i, t] - hvar[j, t] <= valve.hlossmax * (1 - x), name=f'hvu({i},{j},{t})')
-
-    # CONVEXIFICATION OF HEAD-FLOW (PIPES)
-    for (i, j), pipe in inst.pipes.items():
-        coeff = [pipe.hloss[2], pipe.hloss[1]]
-        cutbelow, cutabove = oa.pipecuts(pipe.qmin, pipe.qmax, coeff, (i, j), epsilon, drawgraph=False)
-        # print(f'{pipe}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
+    # CONVEXIFICATION OF HEAD-FLOW
+    for (i, j), arc in inst.arcs.items():
+        cutbelow, cutabove = oa.hlossoa(arc.qmin, arc.qmax, arc.hloss, (i, j), oagap, drawgraph=False)
+        print(f'{arc}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
         for t in horizon:
+            x = svar[(i, j), t] if arc.control else 1
             for n, c in enumerate(cutbelow):
-                milp.addConstr(hvar[i, t] - hvar[j, t] >= c[1] * qvar[(i, j), t] + c[0], name=f'hpl{n}({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] >= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpl{n}({i},{j},{t})')
             for n, c in enumerate(cutabove):
-                milp.addConstr(hvar[i, t] - hvar[j, t] <= c[1] * qvar[(i, j), t] + c[0], name=f'hpu{n}({i},{j},{t})')
-
-    # ACTIVITY (PUMPS)
-    for a, pump in inst.pumps.items():
-        for t in horizon:
-            # !!! original code: integer round ???
-            milp.addConstr(qvar[a, t] >= svar[a, t] * pump.qmin)
-            milp.addConstr(qvar[a, t] <= svar[a, t] * pump.qmax)
-
-    # CONVEXIFICATION OF HEAD-FLOW (PUMPS)
-    for (i, j), pump in inst.pumps.items():
-        cutbelow, cutabove = oa.pumpcuts(pump.qmin, pump.qmax, pump.hgain, '(i, j)', epsilon)
-        for t in horizon:
-            for n, c in enumerate(cutbelow):
-                milp.addConstr(hvar[j, t] - hvar[i, t] >= c[1] * qvar[(i, j), t]
-                               + (c[0] - pump.offdhmin) * svar[(i, j), t] + pump.offdhmin, name=f'hkl{n}({i},{j},{t})')
-            for n, c in enumerate(cutabove):
-                # !!! original code: gapabove = 0 if pump.offdhmax == 1000 else pump.offdhmax - c[1] ???
-                milp.addConstr(hvar[j, t] - hvar[i, t] <= c[1] * qvar[(i, j), t]
-                               + (c[0] - pump.offdhmax) * svar[(i, j), t] + pump.offdhmax, name=f'hku{n}({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpu{n}({i},{j},{t})')
 
     # PUMP SWITCHING
     sympumps = inst.symmetries
@@ -151,29 +133,48 @@ def build_model(inst: Instance, epsilon: float, pumpvals=None):
         for t in horizon:
             for s in inst.dependencies['p1 => p0']:
                 milp.addConstr(svar[s[0], t] >= svar[s[1], t])
-            for s in inst.dependencies['p0 or p1']:
+            for s in inst.dependencies['p0 xor p1']:
                 milp.addConstr(svar[s[0], t] + svar[s[1], t] >= 1)
-            for s in inst.dependencies['p0 <=> p1 xor p2']:
+            for s in inst.dependencies['p0 = p1 xor p2']:
                 milp.addConstr(svar[s[0], t] == svar[s[1], t] + svar[s[2], t])
-            for s in inst.dependencies['p1 => not p0']:
-                milp.addConstr(svar[s[0], t] + svar[s[1], t] <= 1)
+            # for s in inst.dependencies['p1 => not p0']:
+            #    milp.addConstr(svar[s[0], t] + svar[s[1], t] <= 1)
 
-    if pumpvals:
-        for pump in inst.pumps:
+    if arcvals:
+        for a in inst.varcs:
             for t in horizon:
-                v = pumpvals.get((pump, t))
+                v = arcvals.get((a, t))
                 if v == 1:
-                    svar[pump, t].lb = 1
+                    svar[a, t].lb = 1
                 elif v == 0:
-                    svar[pump, t].ub = 0
+                    svar[a, t].ub = 0
 
-    milp.ModelSense = GRB.MINIMIZE
+    obj = gp.quicksum(inst.eleccost(t) * (pump.power[0] * svar[k, t] + pump.power[1] * qvar[k, t])
+                      for k, pump in inst.pumps.items() for t in horizon)
+
+    milp.setObjective(obj, GRB.MINIMIZE)
     milp.update()
 
     milp._svar = svar
     milp._ivar = ivar
     milp._qvar = qvar
     milp._hvar = hvar
-    milp._obj = milp.getObjective()
+    milp._obj = obj
 
     return milp
+
+
+def postsolution(model, vals, precision=1e-6):
+    i = 0
+    for var in model._svar:
+        var.lb = vals[i]
+        var.ub = vals[i]
+        i += 1
+    for var in model._qvar:
+        var.lb = vals[i] - precision
+        var.ub = vals[i] + precision
+        i += 1
+#    for var in model._hvar:
+#        var.lb = vals[i] - precision
+#        var.ub = vals[i] + precision
+#        i += 1

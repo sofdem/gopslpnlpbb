@@ -8,7 +8,6 @@ Created on Thu Apr 29 12:45:57 2021
 
 from gurobipy import GRB
 
-
 class Stat:
     """Statistics for solving one instance."""
 
@@ -16,12 +15,21 @@ class Stat:
     bbfmt = {'unfeas': 0, 'feas': 0, 'adjust': 0, 'cpu_cb': 1, 'ub_best': 2, 'cpu_best': 1, 'ub_1st': 2, 'cpu_1st': 1}
     adjfmt = {'nb_adj': 0, 'ub_adj': 2, 'cpu_adj': 1, 'ub_1st_adj': 2, 'cpu_1st_adj': 1}
 
-    def __init__(self, mode):
-        self.mode = mode
-        self.fmt = Stat.basicfmt if mode == "CVX" else dict(Stat.basicfmt, **(Stat.bbfmt))
+    def __init__(self, modes):
+        self.modes = modes
+        self.fmt = Stat.basicfmt if self.solveconvex() else dict(Stat.basicfmt, **(Stat.bbfmt))
         self.all = None
-        if mode == "SOLVE" or mode == "CUT":
+        if self.withadjust():
             self.fmt.update(Stat.adjfmt)
+
+    def solveconvex(self):
+        return self.modes["solve"] == 'CVX'
+
+    def withadjust(self):
+        return self.modes["adjust"] != "NOADJUST"
+
+    def getsolvemode(self):
+        return self.modes["solve"]
 
     def fill(self, model, costreal):
         self.all = {
@@ -34,7 +42,7 @@ class Stat:
             'nodes': int(model.NodeCount),
             'iter': model.IterCount}
 
-        if self.mode != 'CVX':
+        if not self.solveconvex():
             self.all['ub'] = model._incumbent if model._solutions else float('inf')
             self.all['gap'] = 100 * (self.all['ub'] - self.all['lb']) / self.all['ub']
             self.all.update(model._intnodes)
@@ -45,7 +53,7 @@ class Stat:
             self.all['ub_1st'] = feassol[0]['cost'] if feassol else float('inf')
             self.all['cpu_1st'] = feassol[0]['cpu'] if feassol else 0
 
-        if self.mode == "SOLVE" or self.mode == "CUT":
+        if self.withadjust():
             self.all['nb_adj'] = len(model._adjust_solutions)
             self.all['ub_adj'] = model._adjust_solutions[-1]['cost'] if model._adjust_solutions else float('inf')
             self.all['cpu_adj'] = model._adjust_solutions[-1]['cpu'] if model._adjust_solutions else 0
@@ -62,44 +70,3 @@ class Stat:
     def tostr_basic(self):
         fmtlst = [f"{k}: {round(self.all[k], f)}" for k, f in self.fmt.items()]
         return ", ".join(fmtlst)
-
-
-class OldStat:
-    """Statistics for solving one instance."""
-
-    def __init__(self, cvxmodel, instance, costreal):
-        self.status = cvxmodel.status
-        self.cpu = cvxmodel.Runtime
-        self.realub = costreal
-        self.lb = cvxmodel.objBound
-        self.nodes = cvxmodel.NodeCount
-        self.iter = cvxmodel.IterCount
-        self.cpu_1st = cvxmodel._solution[0]['cpu'] if cvxmodel._solutions else 0
-
-        if not instance:
-            self.instance = cvxmodel._instance
-            self.cpu_cb = cvxmodel._callbacktime
-            self.ub = cvxmodel._incumbent if cvxmodel._solutions else float('inf')
-            self.intnodes = cvxmodel._intnodes
-            self.gap = 100 * (self.ub - self.lb) / self.ub
-        else:
-            self.cpu_cb = 0
-            self.ub = cvxmodel.objVal
-            self.intnodes = 0
-            self.gap = cvxmodel.MIPGap
-
-    @staticmethod
-    def tocsv_title():
-        return 'ub, real_ub, lb, gap, cpu, cpu_cb, nodes, int_nodes, ub_1st, cpu_1st, ub_1adj, cpu_1adj'
-
-    def tocsv_basic(self):
-        return f"{self.ub:.2f}, {self.realub:.2f}, {self.lb:.2f}, {self.gap:.1f}%," \
-               f"{self.cpu:.1f}, {self.cpu_cb:.1f}, {self.nodes:.0f}, {self.intnodes}, {self.cpu_1st:.1f}"
-
-    def tostr_basic(self):
-        return f"cost: {self.ub:.2f}, gap: {self.gap:.1f}%, cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.1f}s, " \
-               f"nodes: {self.nodes:.0f}, {self.intnodes}"
-
-    def tostr_full(self):
-        return f"cost: {self.ub:.2f}, realcost: {self.realub:.2f}, lb: {self.lb:.2f}, " \
-               f"cpu: {self.cpu:.1f}s, cpu_cb: {self.cpu_cb:.2f}s, nodes: {self.nodes:.0f}, {self.intnodes}"

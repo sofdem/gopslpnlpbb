@@ -8,44 +8,105 @@ Created on Fri Apr  3 11:07:46 2020
 
 import gurobipy as gp
 from gurobipy import GRB
-import primalheuristic as ph
+# import primalheuristic as ph
 import time
 from hydraulics import HydraulicNetwork
 import graphic
+import csv
+from pathlib import Path
+
+# every unfeasible integer node X is discarded with a nogood cut: |x-X|>=1
+# RECORDSOL = False:
+# feasible integer nodes are discarded with nogoodcuts too and incumbent/cutoff are updated/checked outside of Gurobi
+# => ObjBound is not a valid lower bound
+# RECORDSOL = True:
+# feasible integer nodes are updated with bound cut: obj >= (realcost-eps) * (1-X)
+# which should invalidate the current MILP solution (when its cost is strictly lower than the real feasible solution)
+# the real feasible solution is provided as a heuristic solution to Gurobi
+# Problem 1: Gurobi 9.1 allows to set solutions at MIPNODE but not at MIPSOL
+# so the solution found at MIPSOL must be recorded to be set at the next MIPNODE event
+# Problem 2: even if Gurobi accepts the provided solution, it does not seem to directly update the cutoff value
+# in multithreading: it visits nodes where incumbent has been updated but not OBJ_BST
+# it vists nodes with higher costs
+
+OUTDIR = Path("../output/")
+IISFILE = Path(OUTDIR, f'modeliis.ilp')
 
 
-def _attach_callback_data(model, instance, adjust_mode):
-    model._incumbent = GRB.INFINITY
-    model._solutions = []
-    model._callbacktime = 0
-    model._gaptol = model.Params.MIPGap  # 1e-2
+def _attach_callback_data(model, instance, modes):
+    model._instance = instance
     model._nperiods = instance.nperiods()
     model._network = HydraulicNetwork(instance, model.Params.FeasibilityTol)
-    model._instance = instance
-    model._adjust = adjust_mode
-    model._adjusttime = time.time()
+
+    model._incumbent = GRB.INFINITY
+    # model._gaptol = model.Params.MIPGapAbs
+    model._callbacktime = 0
+    model._solutions = []
     model._intnodes = {'unfeas': 0, 'feas': 0, 'adjust': 0}
+
+    model._recordsol = (modes["solve"] == "RECORD")
+
+    if modes["adjust"] != "NOADJUST":
+        print("the primal heuristic based on time period adjustment is currently deactivated !")
+    model._adjustmode = None
+    model._adjusttime = time.time()
     model._adjust_solutions = []
+
+    model._lastsolutioncost = GRB.INFINITY
+    vs = list(model._svar.values())
+    vs.extend(model._qvar.values())
+    model._lastsolution = {'vars': vs}
 
 
 def mycallback(m, where):
+
     # STOP if UB-LB < tol
     if where == GRB.Callback.MIP:
-        if m._incumbent - m.cbGet(GRB.Callback.MIP_OBJBND) < m._gaptol * m._incumbent:
-            print('Stop early - ', m._gaptol * 100, '% gap achieved')
+        if m._incumbent - m.cbGet(GRB.Callback.MIP_OBJBND) < m.Params.MIPGap * m._incumbent:
+            print('Stop early - ', m.Params.MIPGap * 100, '% gap achieved')
             m.terminate()
 
-    # elif where == GRB.Callback.MIPNODE:
-    #    if not m._rootlb:
-    #        m._rootlb = m.cbGet(GRB.Callback.MIPNODE_OBJBND)
+    elif m._recordsol and where == GRB.Callback.MIPNODE:
+        if m._lastsolutioncost < GRB.INFINITY:
+            oldbest = m.cbGet(GRB.Callback.MIPNODE_OBJBST)
+            oldbest = 'inf' if oldbest == GRB.INFINITY else f"{oldbest:.6f}"
+            assert len(m._lastsolution['vars']) == len(m._lastsolution['vals'])
+            m.cbSetSolution(m._lastsolution['vars'], m._lastsolution['vals'])
+            objval = m.cbUseSolution()
+            print(f"MIPNODE #{int(m.cbGet(GRB.Callback.MIPNODE_NODCNT))} oldbest = {oldbest} "
+                  f"set solution #{m.cbGet(GRB.Callback.MIPNODE_SOLCNT)}: {m._lastsolutioncost} -> {objval}")
+            if objval >= GRB.INFINITY:
+                solvecvxmodelwithsolution(m, m._lastsolution['vars'], m._lastsolution['vals'])
+                print("if MILP feasible then either the solution violates a lazy cut or a similar solution has already been recorded")
+
+            m._lastsolutioncost = GRB.INFINITY
+        # if not m._rootlb:
+        #    m._rootlb = m.cbGet(GRB.Callback.MIPNODE_OBJBND)
 
     # at an integer solution
     elif where == GRB.Callback.MIPSOL:
-        fstring = f"integer leaf: {m.cbGet(GRB.Callback.MIPSOL_OBJ):.2f} " \
-                  f"[{m.cbGet(GRB.Callback.MIPSOL_OBJBND):.2f}, " \
-                  f"{'inf' if m._incumbent == GRB.INFINITY else round(m._incumbent, 2)}]"
-        m._starttime = time.time()
 
+        costmipsol = m.cbGet(GRB.Callback.MIPSOL_OBJ)
+        bestmipsol = m.cbGet(GRB.Callback.MIPSOL_OBJBST)
+        currentlb = m.cbGet(GRB.Callback.MIPSOL_OBJBND)
+        fstring = f"MIPSOL #{int(m.cbGet(GRB.Callback.MIPSOL_NODCNT))}: {costmipsol} [{currentlb:.2f}, " \
+                  f"{'inf' if m._incumbent == GRB.INFINITY else round(m._incumbent, 2)}]" #, best = {bestmipsol}"
+
+        # prevent to evaluate again the same plan... warning: Gurobi will keep this MILP solution as feasible !
+        # 1/ set by useSolution at the next MIPNODE (then MIPSOL is called again)
+        # 2/ recomputed after adding the bound cut (sometimes (why not always ??) MIPSOL is called again) (=> the 10*)
+        # 3/ due to multithreading delays (the incumbent update seems to be communicated but not the cutoff value)
+        if costmipsol > m._incumbent - 10*m.Params.MIPGapAbs:
+            print(fstring + f" obj >= incumbent {m._incumbent}... SKIP (MILP solution accepted) ")
+            if m._lastsolutioncost < GRB.INFINITY:
+                print("last solution has not yet been posted to the solver... let gurobi record this one instead")
+                m._lastsolutioncost = GRB.INFINITY
+                assert costmipsol
+                sol = [0 if m.cbGetSolution(svar) < 0.5 else 1 for svar in m._svar.values()]
+                assert sol == m._lastsolution['vals'][:len(sol)], "plan has changed between 2 consecutive MIPSOL ???"
+            return
+
+        m._starttime = time.time()
         inactive = {t: set() for t in range(m._nperiods)}
         activity = {t: {} for t in range(m._nperiods)}
         for (a, t), svar in m._svar.items():
@@ -58,59 +119,61 @@ def mycallback(m, where):
         qreal, hreal, vreal, violation = m._network.extended_period_analysis(inactive)
 
         nogood_lastperiod = m._nperiods
+        costrealsol = GRB.INFINITY
 
         if violation:
             v = violation[0]
             m._intnodes['unfeas'] += 1
             nogood_lastperiod = v[0]
-            costreal = GRB.INFINITY
             print(fstring + f' violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
-            m.cbLazy(_nogoodcut(m._svar, nogood_lastperiod, activity) >= 0)
-
-            if m._adjust and m.cbGet(GRB.Callback.MIPSOL_OBJ) < m._incumbent and time.time() > m._adjusttime + 5:
-                m._intnodes['adjust'] += 1
-                m._adjusttime = time.time()
-                # !!! build the model once when bb starts then just update according to activity: see primalheuristic
-                adjustcost = ph.adjust_steplength(m._instance, m._network, activity, inactive, timelimit=60)
-                print(f'primal heuristic: {adjustcost}')
-                adjustbest = m._adjust_solutions[-1]["cost"] if m._adjust_solutions else m._incumbent
-                if 0 < adjustcost < min(adjustbest, m._incumbent):
-                    m._adjust_solutions.append(
-                        {'plan': activity, 'cost': adjustcost, 'cpu': m.cbGet(GRB.Callback.RUNTIME)})
-                    # !!! diff from original code: generate smallest/deepest (stop to the violated period) nogood cut
-                    if m._adjust == "CUT":
-                        costreal = adjustcost
-                        qreal = None
-                        vreal = None
+            m.cbLazy(_linearnorm(m._svar, nogood_lastperiod, activity) >= 1)
 
         else:
-            # !!! set activity[t][a] = 0 when qreal[a][t] == 0 ? remove svar[a,t] from nogood ?
-            costreal = solutioncost(m, activity, qreal)
+            # TODO set activity[t][a] = 0 when qreal[a][t] == 0 ? remove svar[a,t] from nogood ?
             m._intnodes['feas'] += 1
-            assert costreal >= m.cbGet(GRB.Callback.MIPSOL_OBJ), 'relaxed cost > real cost !! '
-            print(fstring + f" feasible: {costreal:2f}")
+            costrealsol = solutioncost(m, activity, qreal)
+            print(fstring + f" feasible: {costrealsol}")
 
-        if costreal < m._incumbent:
-            m._incumbent = costreal
-            m._solutions.append({'plan': activity, 'cost': costreal, 'flows': qreal, 'volumes': vreal,
-                                 'cpu': m.cbGet(GRB.Callback.RUNTIME), 'adjusted': (qreal is None)})
-            gap = (m._incumbent - m.cbGet(GRB.Callback.MIPSOL_OBJBND)) / m._incumbent
-            print(
-                f'UPDATE INCUMBENT gap={gap * 100:.4f}%')
-            # ": {m._incumbent} -> {costreal} (lb={m.cbGet(GRB.Callback.MIPSOL_OBJBND):2f})')
-            if gap < m._gaptol:
-                print('Stop early - ', m._gaptol * 100, '% gap achieved')
-                m.terminate()
+            # assert costrealsol >= costmipsol, 'relaxed cost > real cost !! '
+            if costrealsol < costmipsol - m.Params.MIPGapAbs:
+                print(f"relaxed cost {costmipsol} > real cost {costrealsol} !!!!!!!!!!!!!! best={bestmipsol}")
+                sol = [activity[t][a] for (a, t) in m._svar]
+                for (a, t) in m._qvar:
+                    sol.append(qreal[t][a])
+                solvecvxmodelwithsolution(m, m._lastsolution['vars'], sol)
+
+            if m._recordsol:
+                m.cbLazy(m._obj >= (costrealsol - m.Params.MIPGapAbs) * (1 - _linearnorm(m._svar, nogood_lastperiod, activity)))
+                # print(f"new bound cut at {costrealsol - m.Params.MIPGapAbs}")
             else:
-                m.cbLazy(m._obj <= (1 - m._gaptol) * m._incumbent)
+                m.cbLazy(_linearnorm(m._svar, nogood_lastperiod, activity) >= 1)
+
+        if costrealsol < m._incumbent:
+            m._incumbent = costrealsol
+            m._solutions.append({'plan': activity, 'cost': costrealsol, 'flows': qreal, 'volumes': vreal,
+                                 'cpu': m.cbGet(GRB.Callback.RUNTIME), 'adjusted': (qreal is None)})
+            gap = (m._incumbent - currentlb) / m._incumbent
+            print(f'UPDATE INCUMBENT gap={gap * 100:.4f}%')
+            # ": {m._incumbent} -> {costreal} (lb={m.cbGet(GRB.Callback.MIPSOL_OBJBND):2f})')
+
+            if m._recordsol:
+                # print(f"new solution real={costrealsol} relax={costmipsol} old={bestmipsol}")
+                m._lastsolutioncost = costrealsol
+                sol = [activity[t][a] for (a, t) in m._svar]
+                for (a, t) in m._qvar:
+                    sol.append(qreal[t][a])
+                # for (j,t) in m._hvar:
+                #     sol.append(hreal[t][j])
+                m._lastsolution['vals'] = sol
+
+            # if gap < m.Params.MIPGap:
+            #    print(f"Stop early - {100*gap:2f}% gap achieved")
+            #    m.terminate()
+            # !!! cbcSetSolution seems to not change the cutoff value even if MISOL_OBJBND is correctly updated
+            elif not m._recordsol:
+                m.cbLazy(m._obj <= (1 - m.Params.MIPGap) * m._incumbent)
 
         m._callbacktime += time.time() - m._starttime
-
-        # discarding feasible nodes with nogoods cuts make the final ObjBound a non-valid lower bound
-        # and prevent Gurobi to keep the integer solutions
-        # !!! TODO (not supported in Gurobi 9.1): cbcSetSolution at feas nodes and set costreal as the LB of the node
-        # m.cbLazy(_nogoodcut(m._svar, nogood_lastperiod, activity) >= 0)
-
 
 def _parse_activity(horizon, svars):
     inactive = {t: set() for t in horizon}
@@ -124,18 +187,19 @@ def _parse_activity(horizon, svars):
     return inactive, activity
 
 
-def _nogoodcut(svars, last_period, activity):
+def _linearnorm(svars, last_period, activity):
     linexpr = gp.LinExpr()
     nbact = 0
     for t in range(last_period):
         for a, active in activity[t].items():
+            # _filterwithsymmetry(activity[t], a):
             if active:
                 linexpr.addTerms(-1.0, svars[a, t])
                 nbact += 1
             else:
                 linexpr.addTerms(1.0, svars[a, t])
-    linexpr.addConstant(nbact - 1)
-    #    print('nogood:', str(linexpr))
+    linexpr.addConstant(nbact)
+    # print('nogood:', str(linexpr))
     return linexpr
 
 
@@ -144,10 +208,11 @@ def solutioncost(cvxmodel, status, flows):
                + flows[t][a] * cvxmodel._qvar[a, t].obj for (a, t) in cvxmodel._svar)
 
 
-def lpnlpbb(cvxmodel, instance, drawsolution=True, adjust_mode="SOLVE"):
+def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     """Apply the LP-NLP Branch-and-bound using the convex relaxation model cvxmodel."""
 
-    _attach_callback_data(cvxmodel, instance, adjust_mode)
+    _attach_callback_data(cvxmodel, instance, modes)
+    print(f"########## record/fathom feasible integer nodes ? {cvxmodel._recordsol}")
     cvxmodel.params.LazyConstraints = 1
 
     cvxmodel.optimize(mycallback)
@@ -175,7 +240,9 @@ def lpnlpbb(cvxmodel, instance, drawsolution=True, adjust_mode="SOLVE"):
             graphic.pumps(instance, flow)
             graphic.tanks(instance, flow, volume)
     else:
-        print('no solution found')
+        print(f'no solution found write IIS file {IISFILE}')
+        cvxmodel.computeIIS()
+        cvxmodel.write(IISFILE)
 
     return cost
 
@@ -192,7 +259,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
     costreal = 0
     if cvxmodel.SolCount:
         inactive, activity = _parse_activity(instance.horizon(), cvxmodel._svar)
-        net = HydraulicNetwork(instance, 1e-4)
+        net = HydraulicNetwork(instance, cvxmodel.Params.FeasibilityTol)
         qreal, hreal, vreal, violations = net.extended_period_analysis(inactive, stopatviolation=False)
         for v in violations:
             print(f'violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
@@ -206,9 +273,34 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
         for a, s in cvxmodel._svar.items():
             print(f'{a}: {round(s.x)} {round(cvxmodel._qvar[a].x, 4)}')
     else:
-        iisfile = "cvxmodel.ilp"
-        print("f write IIS in {iisfile}")
+        print(f"f write IIS in {IISFILE}")
         cvxmodel.computeIIS()
-        cvxmodel.write(iisfile)
+        cvxmodel.write(IISFILE)
 
     return costreal
+
+
+def recordandwritesolution(m, activity, qreal, filename):
+    sol = [activity[t][a] for (a, t) in m._svar]
+    for (a, t) in m._qvar:
+        sol.append(qreal[t][a])
+    f = open(filename, 'a')
+    write = csv.writer(f)
+    write.writerow(sol)
+    return sol
+
+
+def solvecvxmodelwithsolution(m, vars, vals):
+    newmodel = m.copy()
+    for i, var in enumerate(vars):
+        newvar = newmodel.getVarByName(var.varname)
+        newvar.lb = vals[i]
+        newvar.ub = vals[i]
+
+    print("test real solution / cvx model")
+    newmodel.optimize()
+    if newmodel.status != GRB.OPTIMAL:
+        print('Optimization was stopped with status %d' % newmodel.status)
+        newmodel.computeIIS()
+        newmodel.write(IISFILE)
+    newmodel.terminate()
