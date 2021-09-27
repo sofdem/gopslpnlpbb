@@ -57,6 +57,7 @@ def _attach_callback_data(model, instance, modes):
     vs.extend(model._qvar.values())
     model._lastsolution = {'vars': vs}
 
+    model._clonemodel = model.copy()
 
 def mycallback(m, where):
 
@@ -126,7 +127,7 @@ def mycallback(m, where):
             m._intnodes['unfeas'] += 1
             nogood_lastperiod = v[0]
             print(fstring + f' violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
-            m.cbLazy(_linearnorm(m._svar, nogood_lastperiod, activity) >= 1)
+            addnogoodcut(m, _linearnorm(m._svar, nogood_lastperiod, activity))
 
         else:
             # TODO set activity[t][a] = 0 when qreal[a][t] == 0 ? remove svar[a,t] from nogood ?
@@ -137,16 +138,20 @@ def mycallback(m, where):
             # assert costrealsol >= costmipsol, 'relaxed cost > real cost !! '
             if costrealsol < costmipsol - m.Params.MIPGapAbs:
                 print(f"relaxed cost {costmipsol} > real cost {costrealsol} !!!!!!!!!!!!!! best={bestmipsol}")
-                sol = [activity[t][a] for (a, t) in m._svar]
+                print("######################## test MILP solution")
+                solrelax = [m.cbGetSolution(var) for var in m._lastsolution['vars']]
+                solvecvxmodelwithsolution(m, m._lastsolution['vars'], solrelax)
+                print("######################## test real solution")
+                solreal = [activity[t][a] for (a, t) in m._svar]
                 for (a, t) in m._qvar:
-                    sol.append(qreal[t][a])
-                solvecvxmodelwithsolution(m, m._lastsolution['vars'], sol)
+                    solreal.append(qreal[t][a])
+                solvecvxmodelwithsolution(m, m._lastsolution['vars'], solreal)
 
             if m._recordsol:
-                m.cbLazy(m._obj >= (costrealsol - m.Params.MIPGapAbs) * (1 - _linearnorm(m._svar, nogood_lastperiod, activity)))
+                addboundcut(m, _linearnorm(m._svar, nogood_lastperiod, activity), costrealsol)
                 # print(f"new bound cut at {costrealsol - m.Params.MIPGapAbs}")
             else:
-                m.cbLazy(_linearnorm(m._svar, nogood_lastperiod, activity) >= 1)
+                addnogoodcut(m, _linearnorm(m._svar, nogood_lastperiod, activity))
 
         if costrealsol < m._incumbent:
             m._incumbent = costrealsol
@@ -171,9 +176,42 @@ def mycallback(m, where):
             #    m.terminate()
             # !!! cbcSetSolution seems to not change the cutoff value even if MISOL_OBJBND is correctly updated
             elif not m._recordsol:
-                m.cbLazy(m._obj <= (1 - m.Params.MIPGap) * m._incumbent)
+                addcutoff(m, (1 - m.Params.MIPGap) * m._incumbent)
 
         m._callbacktime += time.time() - m._starttime
+
+
+def addnogoodcut(m, linnorm):
+    m.cbLazy(linnorm >= 1)
+    if m._clonemodel:
+        c = clonelinexpr(m, linnorm)
+        m._clonemodel.addConstr(c >= 1)
+
+
+def addboundcut(m, linnorm, costrealsol):
+    m.cbLazy(m._obj >= (costrealsol - m.Params.MIPGapAbs) * (1 - linnorm))
+    if m._clonemodel:
+        c = clonelinexpr(m, linnorm)
+        cobj = m._clonemodel.getObjective()
+        m._clonemodel.addConstr(cobj >= (costrealsol - m.Params.MIPGapAbs) * (1 - c))
+
+def addcutoff(m, cutoff):
+    m.cbLazy(m._obj <= cutoff)
+    if m._clonemodel:
+        cobj = m._clonemodel.getObjective()
+        m._clonemodel.addConstr(cobj <= cutoff)
+
+
+def clonelinexpr(m, linexpr):
+    assert m._clonemodel
+    sz = linexpr.size()
+    coeffs = [linexpr.getCoeff(i) for i in range(sz)]
+    vars = [m._clonemodel.getVarByName(linexpr.getVar(i).varname) for i in range(sz)]
+    c = gp.LinExpr(linexpr.getConstant())
+    c.addTerms(coeffs, vars)
+    assert c.size() == sz and c.getConstant() == linexpr.getConstant()
+    return c
+
 
 def _parse_activity(horizon, svars):
     inactive = {t: set() for t in horizon}
@@ -212,7 +250,6 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     """Apply the LP-NLP Branch-and-bound using the convex relaxation model cvxmodel."""
 
     _attach_callback_data(cvxmodel, instance, modes)
-    print(f"########## record/fathom feasible integer nodes ? {cvxmodel._recordsol}")
     cvxmodel.params.LazyConstraints = 1
 
     cvxmodel.optimize(mycallback)
@@ -291,16 +328,15 @@ def recordandwritesolution(m, activity, qreal, filename):
 
 
 def solvecvxmodelwithsolution(m, vars, vals):
-    newmodel = m.copy()
+    model = m._clonemodel if m._clonemodel else m.copy()
     for i, var in enumerate(vars):
-        newvar = newmodel.getVarByName(var.varname)
-        newvar.lb = vals[i]
-        newvar.ub = vals[i]
-
-    print("test real solution / cvx model")
-    newmodel.optimize()
-    if newmodel.status != GRB.OPTIMAL:
-        print('Optimization was stopped with status %d' % newmodel.status)
-        newmodel.computeIIS()
-        newmodel.write(IISFILE)
-    newmodel.terminate()
+        clonevar = model.getVarByName(var.varname)
+        clonevar.lb = vals[i]
+        clonevar.ub = vals[i]
+    print("test real solution / cvx model (without internal cuts nor processing)")
+    model.optimize()
+    if model.status != GRB.OPTIMAL:
+        print('Optimization was stopped with status %d' % model.status)
+        model.computeIIS()
+        model.write(IISFILE)
+    model.terminate()

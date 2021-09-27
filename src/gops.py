@@ -193,7 +193,7 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
         cvxmodel.terminate()
 
 
-solveinstance('FSD s 48 1', modes='', drawsolution=False)
+solveinstance('FSD s 48 4', modes='', drawsolution=False)
 # solveinstance('RIC s 12 3', modes='CUT')
 # testsolution('RIC s 12 1', "sol.csv")
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")

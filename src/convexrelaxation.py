@@ -103,6 +103,82 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
             for n, c in enumerate(cutabove):
                 milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpu{n}({i},{j},{t})')
 
+    strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
+
+    binarydependencies(inst, milp, ivar, svar, nperiods, horizon)
+
+    if arcvals:
+        postbinarysolution(inst, arcvals, horizon, svar)
+
+    obj = gp.quicksum(inst.eleccost(t) * (pump.power[0] * svar[k, t] + pump.power[1] * qvar[k, t])
+                      for k, pump in inst.pumps.items() for t in horizon)
+
+    milp.setObjective(obj, GRB.MINIMIZE)
+    milp.update()
+
+    milp._svar = svar
+    milp._ivar = ivar
+    milp._qvar = qvar
+    milp._hvar = hvar
+    milp._obj = obj
+
+    return milp
+
+def strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon, withoutz):
+    print("#################  STRONG DUALITY: 5 gvar(pipe) + 10 gvar (pump)")
+    # strong duality constraint: sum_a gvar[a,t] + sdexpr[t] <= 0
+    gvar = {}    # arc component:    x_a * (\Phi_a(q_a) - \Phi_a(\phi^{-1}(h_a)) + h_a\phi^{-1}(h_a))
+    sdexpr = {}  # node component:   sum_n (q_n * h_n)
+    hqvar = {}   # tank component:   q_r * h_r
+    for t in horizon:
+
+        # McCormick's envelope of hq_r = h_r * q_r = h_r * (h_{r+1}-h_r)/a
+        for j, tank in inst.tanks.items():
+            coef = 3.6 * inst.tsinhours() / tank.surface
+            (h, H) = (hvar[j, t], hvar[j, t + 1])
+            (l, L, u, U) = (h.lb, H.lb, h.ub, H.ub)
+            if l == u:
+                hqvar[j, t] = (H - l) * l / coef
+            else:
+                hqvar[j, t] = milp.addVar(lb=-GRB.INFINITY, name=f'hqt({j},{t})')
+                inflow = {a: [inst.arcs[a].qmin, inst.arcs[a].qmax] for a in inst.inarcs(j)}
+                outflow = {a: [inst.arcs[a].qmin, inst.arcs[a].qmax] for a in inst.outarcs(j)}
+                print(f"inflow: {inflow}")
+                print(f"outflow: {outflow}")
+                lq = max(coef * inst.inflowmin(j), L - u)
+                uq = min(coef * inst.inflowmax(j), U - l)
+                #refining with a direction indicator variable
+                if withoutz:
+                    milp.addConstr(coef * hqvar[j, t] >= l * (H - h) + lq * (h - l))
+                    milp.addConstr(coef * hqvar[j, t] >= u * (H - h) + uq * (h - u))
+                else:
+                    zvar = milp.addVar(vtype=GRB.BINARY, name=f'z({j},{t})')
+                    hzvar = milp.addVar(lb=0, ub=u, name=f'hz({j},{t})')
+                    milp.addConstr(hzvar <= u * zvar)
+                    milp.addConstr(hzvar >= l * zvar)
+                    milp.addConstr(hzvar <= h - l * (1 - zvar))
+                    milp.addConstr(hzvar >= h - u * (1 - zvar))
+                    milp.addConstr(coef * hqvar[j, t] >= l * (H - h) + lq * (hzvar - l * zvar))
+                    milp.addConstr(coef * hqvar[j, t] >= u * (H - h) + uq * (h - hzvar - u * (1 - zvar)))
+
+        # sdexpr[t] = milp.addVar(lb=-GRB.INFINITY, name=f'sd({t})')
+        sdexpr[t] = gp.quicksum(hqvar[j, t] for j in inst.tanks) \
+            + gp.quicksum(junc.demand(t) * hvar[j, t] for j, junc in inst.junctions.items()) \
+            + gp.quicksum(res.head(t) * qexpr[j, t] for j, res in inst.reservoirs.items())
+
+        # OA for the convex function g_a >= Phi_a(q_a) - Phi_a(phi^{-1}(h_a)) + h_a * phi^{-1}(h_a)
+        for a, arc in inst.arcs.items():
+            gvar[a, t] = milp.addVar(lb=-GRB.INFINITY, name=f'g({a},{t})')
+            N = 10 if a in inst.pumps else 5
+            for k in range(N):
+                qstar = (arc.qmin + arc.qmax) * k / (N - 1)
+                milp.addConstr(gvar[a, t] >= arc.hlossval(qstar) *
+                               (qvar[a, t] - qstar * svar[a, t]) + qstar * dhvar[a, t] - 1e-6)
+
+        milp.addConstr(gp.quicksum(gvar[a, t] for a in inst.arcs) + sdexpr[t] <= 1e-2)
+
+
+def binarydependencies(inst, milp, ivar, svar, nperiods, horizon):
     # PUMP SWITCHING
     sympumps = inst.symmetries
     uniquepumps = inst.pumps_without_sym()
@@ -140,28 +216,16 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
             # for s in inst.dependencies['p1 => not p0']:
             #    milp.addConstr(svar[s[0], t] + svar[s[1], t] <= 1)
 
-    if arcvals:
-        for a in inst.varcs:
-            for t in horizon:
-                v = arcvals.get((a, t))
-                if v == 1:
-                    svar[a, t].lb = 1
-                elif v == 0:
-                    svar[a, t].ub = 0
 
-    obj = gp.quicksum(inst.eleccost(t) * (pump.power[0] * svar[k, t] + pump.power[1] * qvar[k, t])
-                      for k, pump in inst.pumps.items() for t in horizon)
-
-    milp.setObjective(obj, GRB.MINIMIZE)
-    milp.update()
-
-    milp._svar = svar
-    milp._ivar = ivar
-    milp._qvar = qvar
-    milp._hvar = hvar
-    milp._obj = obj
-
-    return milp
+def postbinarysolution(inst, arcvals, horizon, svar):
+    assert arcvals
+    for a in inst.varcs:
+        for t in horizon:
+            v = arcvals.get((a, t))
+            if v == 1:
+                svar[a, t].lb = 1
+            elif v == 0:
+                svar[a, t].ub = 0
 
 
 def postsolution(model, vals, precision=1e-6):
