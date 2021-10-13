@@ -183,6 +183,9 @@ class _Arc:
         c1 = (c0 - self.hlossval(q2)) / (q1 - q2)
         return [c0-c1*q1, c1]
 
+    def nonnull_flow_when_on(self):
+        return False
+
     def __str__(self):
         return f'{self.id} [{self.qmin}, {self.qmax}] {self.hloss}'
 
@@ -260,6 +263,9 @@ class _Pump(_ControllableArc):
         assert len(self.power) == 2
         return self.power[0] + self.power[1] * q if q else 0
 
+    def nonnull_flow_when_on(self):
+        return True
+
     def __str__(self):
         return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}] ' \
                f'{self.power} {self.type} '
@@ -326,6 +332,12 @@ class Instance:
     def inflowmax(self, node):
         return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
                 - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
+
+    def flowtoheight(self, tank):
+        return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)
+
+    def flowtovolume(self):
+        return self.tsduration.total_seconds() / 1000  # in m3` / (L / s)
 
     #  PARSERS
 
@@ -532,10 +544,10 @@ class Instance:
             print(i)
             print(str(a))
 
-    def transcript_bounds(self, csvfile):
-        """Parse bounds in the hdf file."""
-        file = Path(Instance.BNDSDIR, self.name)
-        pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
+    # def transcript_bounds(self, csvfile):
+    #    """Parse bounds in the hdf file."""
+    #     file = Path(Instance.BNDSDIR, self.name)
+    #     pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
 
     def parsesolution(self, filename):
         csvfile = open(filename)

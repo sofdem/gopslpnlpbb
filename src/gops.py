@@ -117,8 +117,9 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
 def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=True, stat=None, file=defaultfilename):
     instance = makeinstance(instid)
     stat = Stat(parsemode(modes)) if stat is None else stat
-    solve(instance, oagap, mipgap, drawsolution, stat)
     now = datetime.now().strftime("%y%m%d-%H%M")
+    print(now)
+    solve(instance, oagap, mipgap, drawsolution, stat)
     fileexists = os.path.exists(file)
     f = open(file, 'a')
     if not fileexists:

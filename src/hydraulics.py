@@ -12,6 +12,7 @@ from copy import deepcopy
 
 NEWTON_TOL = 1e-8
 
+
 # TODO merge with instance
 class HydraulicNetwork:
     """An alternative view of the water network."""
@@ -95,7 +96,7 @@ class HydraulicNetwork:
         """Build the matrices for the Todini-Pilati algorithm."""
         nodeindex = {}
 
-        # create q and H0: the column vectors of fixed demand and fixed head nodes
+        # create q and h0: the column vectors of fixed demand and fixed head nodes
         demand = []
         head = []
         ndemand = 0
@@ -112,43 +113,44 @@ class HydraulicNetwork:
                 nodeindex[nodeid] = (False, nhead)
                 nhead += 1
 
-        q = np.array(demand).reshape(ndemand, 1)
-        H0 = np.array(head).reshape(nhead, 1)
+        q0 = np.array(demand).reshape(ndemand, 1)
+        h0 = np.array(head).reshape(nhead, 1)
 
         # create the incidence matrices over fixed demand and fixed head nodes
         # print('SIZE = ', ndemand, len(arcs), nhead)
-        A21 = np.zeros((ndemand, len(arcs)))
-        A12 = np.zeros((len(arcs), ndemand))
-        A01 = np.zeros((nhead, len(arcs)))
-        A10 = np.zeros((len(arcs), nhead))
+        a21 = np.zeros((ndemand, len(arcs)))
+        a12 = np.zeros((len(arcs), ndemand))
+        a01 = np.zeros((nhead, len(arcs)))
+        a10 = np.zeros((len(arcs), nhead))
 
         for (inout, val) in {(1, 1), (0, -1)}:
             for j, arc in enumerate(arcs):
                 (isDemand, i) = nodeindex.get(arc[inout])
                 if isDemand:
-                    A21[i][j] = val
-                    A12[j][i] = val
+                    a21[i][j] = val
+                    a12[j][i] = val
                 else:
-                    A01[i][j] = val
-                    A10[j][i] = val
-        return nodeindex, q, H0, A21, A12, A10
+                    a01[i][j] = val
+                    a10[j][i] = val
+        return nodeindex, q0, h0, a21, a12, a10
 
     def _flow_analysis(self, inactive: set, period: int, volumes: dict):
 
         arcs, incidence = self.active_network(inactive)
-        nodeindex, q, H0, A21, A12, A10 = self.build_matrices(arcs, incidence, period, volumes)
-        Q, H = self.todini_pilati(arcs, q, H0, A21, A12, A10)
+        nodeindex, q0, h0, a21, a12, a10 = self.build_matrices(arcs, incidence, period, volumes)
+        q, h = self.todini_pilati(arcs, q0, h0, a21, a12, a10)
 
         flow = {a: 0 for a in self.instance.arcs}
         head = {n: 0 for n in self.instance.nodes}
 
         for node, (isDemand, i) in nodeindex.items():
-            head[node] = H[i][0] if isDemand else H0[i][0]
+            head[node] = h[i][0] if isDemand else h0[i][0]
 
         for k, ((i, j), arc) in enumerate(arcs.items()):
-            flow[(i, j)] = Q[k][0]
+            flow[(i, j)] = q[k][0]
             assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
             assert self.check_bounds((i, j), flow[(i, j)]), f'qbnds a=({i},{j}) t={period}'
+            assert self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
 
         # recover the head at removed nodes
         for leaf, (branch, altj) in self.removed_nodes.items():
@@ -177,6 +179,13 @@ class HydraulicNetwork:
             print(f"violated flow arc bound ! q={q} > qmax={qmax}")
         return ok
 
+    def check_nonnullflow(self, arc, q):
+        ok = True
+        if self.instance.arcs[arc].nonnull_flow_when_on() and -self.feastol < q < self.feastol:
+            ok = False
+            print(f"null flow q={q} on active pump")
+        return ok
+
     def extended_period_analysis(self, inactive: dict, stopatviolation=True):
         """Run flow analysis progressively on each time period."""
         violations = []
@@ -191,7 +200,7 @@ class HydraulicNetwork:
             flow[t], head[t] = self._flow_analysis(inactive[t], t, volumes[t])
 
             for i, tank in self.instance.tanks.items():
-                volumes[t + 1][i] = volumes[t][i] + 3.6 * self.instance.tsinhours() \
+                volumes[t + 1][i] = volumes[t][i] + self.instance.flowtovolume() \
                                     * (sum(flow[t][a] for a in self.instance.inarcs(i))
                                        - sum(flow[t][a] for a in self.instance.outarcs(i)))
 
@@ -213,28 +222,28 @@ class HydraulicNetwork:
 
         return flow, head, volumes, violations
 
-
-    def todini_pilati(self, arcs, q, H0, A21, A12, A10):
+    @staticmethod
+    def todini_pilati(arcs, q0, h0, a21, a12, a10):
         """Apply the Todini Pilati algorithm of flow analysis, return flow and head."""
-        Id = np.identity(len(arcs))
-        Q = np.full((len(arcs), 1), 10)
-        H = np.zeros((1, len(q)))
+        ident = np.identity(len(arcs))
+        q = np.full((len(arcs), 1), 10)
+        h = np.zeros((1, len(q0)))
 
-        A11 = np.zeros((len(arcs), len(arcs)))
-        D = np.zeros((len(arcs), len(arcs)))
+        a11 = np.zeros((len(arcs), len(arcs)))
+        d = np.zeros((len(arcs), len(arcs)))
 
         gap = 1
         while gap > NEWTON_TOL:
-            Qold = np.copy(Q)
+            qold = np.copy(q)
             for i, (a, arc) in enumerate(arcs.items()):
-                A11[i][i] = arc[2] * abs(Q[i][0]) + arc[1] + arc[0] / Q[i][0]
-                D[i][i] = (2 * arc[2] * abs(Q[i][0]) + arc[1]) ** (-1)
+                a11[i][i] = arc[2] * abs(q[i][0]) + arc[1] + arc[0] / q[i][0]
+                d[i][i] = (2 * arc[2] * abs(q[i][0]) + arc[1]) ** (-1)
 
-            H = - np.linalg.inv(A21 @ D @ A12) @ (A21 @ D @ (A11 @ Q + A10 @ H0) + q - A21 @ Q)
-            Q = (Id - D @ A11) @ Q - D @ (A12 @ H + A10 @ H0)
+            h = - np.linalg.inv(a21 @ d @ a12) @ (a21 @ d @ (a11 @ q + a10 @ h0) + q0 - a21 @ q)
+            q = (ident - d @ a11) @ q - d @ (a12 @ h + a10 @ h0)
 
-            # !!! assert Q!=0 and Q[pump]>0
-            gap = sum(abs(Q[i][0] - Qold[i][0]) for i, arc in enumerate(arcs)) \
-                / sum(abs(Q[i][0]) for i, arc in enumerate(arcs))
+            # !!! assert q!=0 and q[pump]>0
+            gap = sum(abs(q[i][0] - qold[i][0]) for i, arc in enumerate(arcs)) \
+                / sum(abs(q[i][0]) for i, arc in enumerate(arcs))
 
-        return Q, H
+        return q, h
