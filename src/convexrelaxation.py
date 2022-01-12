@@ -157,6 +157,8 @@ def strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon
                 else:
                     zvar = milp.addVar(vtype=GRB.BINARY, name=f'z({j},{t})')
                     hzvar = milp.addVar(lb=0, ub=u0, name=f'hz({j},{t})')
+                    milp.addConstr(h1 - h0 <= (u1 - l0) * zvar, name=f'z0up({j},{t})')
+                    milp.addConstr(h1 - h0 >= (l1 - u0) * (1 - zvar), name=f'z0lo({j},{t})')
                     milp.addConstr(hzvar <= u0 * zvar, name=f'hz1up({j},{t})')
                     milp.addConstr(hzvar >= l0 * zvar, name=f'hz1lo({j},{t})')
                     milp.addConstr(hzvar <= h0 - l0 * (1 - zvar), name=f'hz0up({j},{t})')
