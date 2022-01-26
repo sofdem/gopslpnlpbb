@@ -130,7 +130,7 @@ def mycallback(m, where):
             v = violation[0]
             m._intnodes['unfeas'] += 1
             nogood_lastperiod = v[0]
-            print(fstring + f' violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
+            print(fstring + f" t={v[0]} {v[1]}")
             addnogoodcut(m, _linearnorm(m._svar, nogood_lastperiod, activity), currentnode)
 
         else:
@@ -284,7 +284,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
             flow, hreal, volume, violation = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
             assert violation, 'solution was time-adjusted and should be slightly unfeasible'
             for v in violation:
-                print(f'violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
+                print(v[1])
             cost = solutioncost(cvxmodel, plan, flow)
             print(f'real plan cost = {cost} / time adjustment cost = {cvxmodel._incumbent}')
         if drawsolution:
@@ -313,7 +313,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
         net = HydraulicNetwork(instance, cvxmodel.Params.FeasibilityTol)
         qreal, hreal, vreal, violations = net.extended_period_analysis(inactive, stopatviolation=False)
         for v in violations:
-            print(f'violation t={v[0]} tk={v[1]}: {v[2]:.2f}')
+            print(v[1])
         actreal = {t: {a: (0 if abs(q) < 1e-6 else 1) for a, q in qreal[t].items()} for t in qreal}
         costreal = solutioncost(cvxmodel, actreal, qreal)
 

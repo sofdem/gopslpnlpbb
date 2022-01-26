@@ -216,7 +216,7 @@ def binarydependencies(inst, milp, ivar, svar, nperiods, horizon):
             for s in inst.dependencies['p1 => p0']:
                 milp.addConstr(svar[s[0], t] >= svar[s[1], t], name=f'dep1({t})')
             for s in inst.dependencies['p0 xor p1']:
-                milp.addConstr(svar[s[0], t] + svar[s[1], t] >= 1, name=f'dep2({t})')
+                milp.addConstr(svar[s[0], t] + svar[s[1], t] == 1, name=f'dep2({t})')
             for s in inst.dependencies['p0 = p1 xor p2']:
                 milp.addConstr(svar[s[0], t] == svar[s[1], t] + svar[s[2], t], name=f'dep3({t})')
             # for s in inst.dependencies['p1 => not p0']:

@@ -148,9 +148,9 @@ class HydraulicNetwork:
 
         for k, ((i, j), arc) in enumerate(arcs.items()):
             flow[(i, j)] = q[k][0]
-            assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
-            assert self.check_bounds((i, j), flow[(i, j)]), f'qbnds a=({i},{j}) t={period}'
-            assert self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
+            self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
+            self.check_bounds((i, j), flow[(i, j)]), f'qbnds a=({i},{j}) t={period}'
+            self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
 
         # recover the head at removed nodes
         for leaf, (branch, altj) in self.removed_nodes.items():
@@ -160,31 +160,21 @@ class HydraulicNetwork:
         return flow, head
 
     def check_hloss(self, arc, q, hi, hj):
-        ok = True
         hlossval = (arc[2]*abs(q) + arc[1])*q + arc[0]
         if abs(hlossval-hi+hj) > self.feastol:
-            ok = False
-            print(f"q={q}: {hlossval} != {hi} - {hj} = {hi-hj}")
-        return ok
+            raise ValueError(f"hloss q={q}: {hlossval} != {hi} - {hj} = {hi-hj}")
 
     def check_bounds(self, arc, q):
-        ok = True
         qmin = self.instance.arcs[arc].qmin
         if q < self.instance.arcs[arc].qmin - self.feastol:
-            ok = False
-            print(f"violated flow arc bound ! q={q} < qmin={qmin}")
+            raise ValueError(f"bound q={q} < qmin={qmin}")
         qmax = self.instance.arcs[arc].qmax
         if q > self.instance.arcs[arc].qmax + self.feastol:
-            ok = False
-            print(f"violated flow arc bound ! q={q} > qmax={qmax}")
-        return ok
+            raise ValueError(f"bound q={q} > qmax={qmax}")
 
     def check_nonnullflow(self, arc, q):
-        ok = True
         if self.instance.arcs[arc].nonnull_flow_when_on() and -self.feastol < q < self.feastol:
-            ok = False
-            print(f"null flow q={q} on active pump")
-        return ok
+            raise ValueError(f"null flow q={q} on active pump")
 
     def extended_period_analysis(self, inactive: dict, stopatviolation=True):
         """Run flow analysis progressively on each time period."""
@@ -196,21 +186,26 @@ class HydraulicNetwork:
         head = {}
 
         for t in range(nperiods):
-
-            flow[t], head[t] = self._flow_analysis(inactive[t], t, volumes[t])
+            try:
+                flow[t], head[t] = self._flow_analysis(inactive[t], t, volumes[t])
+            except ValueError as ve:
+                violations.append((t+1, ve))
+                if stopatviolation:
+                    return flow, head, volumes, violations
 
             for i, tank in self.instance.tanks.items():
                 volumes[t + 1][i] = volumes[t][i] + self.instance.flowtovolume() \
                                     * (sum(flow[t][a] for a in self.instance.inarcs(i))
                                        - sum(flow[t][a] for a in self.instance.outarcs(i)))
-
-                if volumes[t + 1][i] < tank.vmin - self.feastol or volumes[t + 1][i] > tank.vmax + self.feastol:
-                    violations.append((t + 1, i,
-                                       volumes[t + 1][i] - tank.vmin if volumes[t + 1][i] < tank.vmin - self.feastol
-                                       else volumes[t + 1][i] - tank.vmax))
-
+                if volumes[t + 1][i] < tank.vmin - self.feastol :
+                    violations.append((t+1, f'capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}'))
                     if stopatviolation:
                         return flow, head, volumes, violations
+                elif volumes[t + 1][i] > tank.vmax + self.feastol:
+                    violations.append((t+1, f'capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}'))
+                    if stopatviolation:
+                        return flow, head, volumes, violations
+
 
         head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
