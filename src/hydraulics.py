@@ -159,6 +159,7 @@ class HydraulicNetwork:
 
         return flow, head
 
+    # @todo exceptions are not compatible here:  should be able to compute an (unfeas) flow anyway
     def check_hloss(self, arc, q, hi, hj):
         hlossval = (arc[2]*abs(q) + arc[1])*q + arc[0]
         if abs(hlossval-hi+hj) > self.feastol:

@@ -11,10 +11,11 @@ bounds are read from a file (.hdf)
 """
 
 from instance import Instance
-from datetime import datetime
+import datetime as dt
 import convexrelaxation as rel
 import lpnlpbb as bb
 import csv
+import sys
 import graphic
 from hydraulics import HydraulicNetwork
 from pathlib import Path
@@ -28,10 +29,10 @@ BENCH = {
     'FSD': {'ntk': 'Simple_Network', 'D0': 1, 'H0': '/01/2013 00:00'},
     'RIC': {'ntk': 'Richmond', 'D0': 21, 'H0': '/05/2013 07:00'},
     'ANY': {'ntk': 'Anytown', 'D0': 1, 'H0': '/01/2013 00:00'},
+    'RIY': {'ntk': 'Richmond', 'D0': 1, 'H0': '/01/2012 00:00'},
 }
 PROFILE = {'s': 'Profile_5d_30m_smooth', 'n': 'Profile_5d_30m_smooth'}
 STEPLENGTH = {'12': 4, '24': 2, '48': 1}
-
 
 # ex of instance id: "FSD s 24 3"
 def makeinstance(instid: str):
@@ -41,7 +42,6 @@ def makeinstance(instid: str):
     dbeg = f"{(d['D0'] + int(a[3]) - 1):02d}" + d['H0']
     dend = f"{(d['D0'] + int(a[3])):02d}" + d['H0']
     return Instance(d['ntk'], PROFILE[a[1]], dbeg, dend, STEPLENGTH[a[2]])
-
 
 FASTBENCH = [
     'FSD s 12 1',
@@ -84,13 +84,13 @@ def parsemode(modes):
 def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print('***********************************************')
     print(instance.tostr_basic())
-    print(instance.tostr_network())
+    #print(instance.tostr_network())
 
-    print("obbt: parse bounds")
-    try:
-        instance.parse_bounds()
-    except UnicodeDecodeError as err:
-        print(f'obbt bounds not read: {err}')
+#    print("obbt: parse bounds")
+#    try:
+#        instance.parse_bounds()
+#    except UnicodeDecodeError as err:
+#        print(f'obbt bounds not read: {err}')
     # instance.print_all()
 
     print("create model")
@@ -114,10 +114,12 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     cvxmodel.terminate()
 
 
+
+
 def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=True, stat=None, file=defaultfilename):
     instance = makeinstance(instid)
     stat = Stat(parsemode(modes)) if stat is None else stat
-    now = datetime.now().strftime("%y%m%d-%H%M")
+    now = dt.datetime.now().strftime("%y%m%d-%H%M")
     print(now)
     solve(instance, oagap, mipgap, drawsolution, stat)
     fileexists = os.path.exists(file)
@@ -130,7 +132,7 @@ def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution
 
 def solvebench(bench, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=False):
     stat = Stat(parsemode(modes))
-    now = datetime.now().strftime("%y%m%d-%H%M")
+    now = dt.datetime.now().strftime("%y%m%d-%H%M")
     resfilename = Path(OUTDIR, f'res{now}.csv')
     for i in bench:
         solveinstance(i, oagap=oagap, mipgap=mipgap, drawsolution=drawsolution, stat=stat, file=resfilename)
@@ -195,8 +197,61 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
 
 
 # solveinstance('FSD s 48 4', modes='', drawsolution=False)
-solveinstance('RIC s 12 3', modes='')
+#solveinstance('RIC s 12 3', modes='CVX')
+#solveinstance('ANY s 12 1', modes='CVX')
 # testsolution('RIC s 12 1', "sol.csv")
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
 # solvebench(FASTBENCH[:7], modes=None)
+
+def makeinstance(instid: str):
+    a = instid.split()
+    assert len(a) == 4, f"wrong instance key {instid}"
+    d = BENCH[a[0]]
+    dbeg = f"{(d['D0'] + int(a[3]) - 1):02d}" + d['H0']
+    dend = f"{(d['D0'] + int(a[3])):02d}" + d['H0']
+    return Instance(d['ntk'], PROFILE[a[1]], dbeg, dend, STEPLENGTH[a[2]])
+
+def solveconvexonly(dbeg, dend, oagap=OA_GAP, mipgap=MIP_GAP,):
+    profile = 'Profile_365d_30m_smooth'
+    steplength = STEPLENGTH['24']
+    ntk = 'Richmond'
+    """Solve the convex relaxation model cvxmodel."""
+    print('***********************************************')
+    instance = Instance(ntk, profile, dbeg, dend, steplength)
+    print(instance.tostr_basic())
+    print("create model")
+    cvxmodel = rel.build_model(instance, oagap)
+    cvxmodel.params.MIPGap = mipgap
+    cvxmodel.params.timeLimit = 500
+#    cvxmodel.params.Threads = 1
+
+    cvxmodel.optimize()
+    #if cvxmodel.status != GRB.OPTIMAL:
+    #    print('Optimization was stopped with status %d' % cvxmodel.status)
+    #else:
+    solution = rel.getfullsolution(instance, cvxmodel)
+    if solution:
+        print(solution)
+    else:
+        sys.stderr.write(f"no solution found for {instance.name}")
+    return solution
+
+def solveyear(oagap=OA_GAP, mipgap=MIP_GAP):
+    now = dt.datetime.now().strftime("%y%m%d-%H%M")
+    file = Path(OUTDIR, f'quickRIY24{now}.csv')
+
+    datefmt = "%d/%m/%Y %H:%M"
+    dbeg = '01/01/2012 00:00'
+    for i in range(1, 366):
+        instid = f"RIY s 24 {i}"
+        dateend = dt.datetime.strptime(dbeg, datefmt) + dt.timedelta(days=1)
+        dend = dateend.strftime(datefmt)
+        solution = solveconvexonly(dbeg, dend, oagap=oagap, mipgap=mipgap)
+        towrite = str(solution) if solution else "no"
+        f = open(file, 'a')
+        f.write(f"{instid}; {dbeg}; {towrite}\n")
+        f.close()
+        dbeg = dend
+
+solveyear(mipgap=0.05)

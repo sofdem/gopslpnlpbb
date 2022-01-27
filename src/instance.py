@@ -239,8 +239,8 @@ class _ValvedPipe(_ControllableArc):
         auxnode = self.nodes[0]
         self.nodes = (pipe.nodes[0], self.nodes[1])
         self.hloss = pipe.hloss
-        print(f'valve bounds = [{self.qmin}, {self.qmax}]')
-        print(f'pipe bounds = [{pipe.qmin}, {pipe.qmax}]')
+        # print(f'valve bounds = [{self.qmin}, {self.qmax}]')
+        # print(f'pipe bounds = [{pipe.qmin}, {pipe.qmax}]')
         self.update_qbounds(pipe.qmin, pipe.qmax)
         return auxnode
 
@@ -401,7 +401,8 @@ class Instance:
         periods = []
         while i < len(data) and data[i][0] != endtime:
             for j, n in enumerate(profilename):
-                profiles[n].append(float(data[i][j + 1]))
+                # @todo remove factor
+                profiles[n].append(float(data[i][j + 1])) #*0.9)
             periods.append(dt.datetime.strptime(data[i][0], '%d/%m/%Y %H:%M'))
             i += aggsteps
         assert i < len(data), f'end time {endtime} not found in {filename}'
@@ -470,7 +471,7 @@ class Instance:
             i = inpipe[0][0]
             pipe = self.fpipes.pop((i, iv))
             auxnode = valve.merge_pipe(pipe)
-            print(f'valved pipe {(i, j)} = {valve.pipe} + {valve.valve}')
+            # print(f'valved pipe {(i, j)} = {valve.pipe} + {valve.valve}')
             assert self.junctions[auxnode].dmean == 0
             self.junctions.pop(auxnode)
             vpipes[(i, j)] = valve

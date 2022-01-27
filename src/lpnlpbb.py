@@ -261,6 +261,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
 
     if cvxmodel.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % cvxmodel.status)
+        return 0
 
     print("check solution")
     optsol =  [v.x for v in cvxmodel._svar.values()]
@@ -272,6 +273,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     solvecvxmodelwithsolution(cvxmodel, optsol)
 
     cost = 0
+
     if cvxmodel._solutions:
         bestsol = cvxmodel._solutions[-1]
         plan = bestsol['plan']
@@ -296,7 +298,6 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         cvxmodel.write(IISFILE)
 
     return cost
-
 
 def solveconvex(cvxmodel, instance, drawsolution=True):
     """Solve the convex relaxation model cvxmodel."""
@@ -326,7 +327,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
     else:
         print(f"f write IIS in {IISFILE}")
         cvxmodel.computeIIS()
-        cvxmodel.write(IISFILE)
+        cvxmodel.write(str(IISFILE))
 
     return costreal
 

@@ -97,7 +97,7 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
     # CONVEXIFICATION OF HEAD-FLOW
     for (i, j), arc in inst.arcs.items():
         cutbelow, cutabove = oa.hlossoa(arc.qmin, arc.qmax, arc.hloss, (i, j), oagap, drawgraph=False)
-        print(f'{arc}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
+        # print(f'{arc}: {len(cutbelow)} cutbelow, {len(cutabove)} cutabove')
         for t in horizon:
             x = svar[(i, j), t] if arc.control else 1
             for n, c in enumerate(cutbelow):
@@ -146,8 +146,8 @@ def strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon
                 hqvar[j, t] = milp.addVar(lb=-GRB.INFINITY, name=f'hqt({j},{t})')
                 inflow = {a: [inst.arcs[a].qmin, inst.arcs[a].qmax] for a in inst.inarcs(j)}
                 outflow = {a: [inst.arcs[a].qmin, inst.arcs[a].qmax] for a in inst.outarcs(j)}
-                print(f"inflow: {inflow}")
-                print(f"outflow: {outflow}")
+#                print(f"inflow: {inflow}")
+#                print(f"outflow: {outflow}")
                 lq = max(c * inst.inflowmin(j), l1 - u0)
                 uq = min(c * inst.inflowmax(j), u1 - l0)
                 # refining with a direction indicator variable
@@ -248,3 +248,20 @@ def postsolution(model, vals, precision=1e-6):
 #        var.lb = vals[i] - precision
 #        var.ub = vals[i] + precision
 #        i += 1
+
+
+def getfullsolution(inst, model):
+    if model.status != GRB.OPTIMAL:
+        return {}
+
+    horizon = inst.horizon()
+    sol = {'ub': model.objVal, 'lb': model.objBound}
+    for (i, j), a in inst.arcs.items():
+        if a.control:
+            sol[('X', i, j)] = [ 1 if (model._svar[(i, j), t].x > 0.5) else 0 for t in horizon]
+    for (i, j), pump in inst.pumps.items():
+        sol[('P', i, j)] = [(inst.eleccost(t) * (pump.power[0] * model._svar[(i, j), t].x +
+                                                pump.power[1] *  model._qvar[(i, j), t].x)) for t in horizon]
+    for j, tank in inst.tanks.items():
+        sol[('DH', j)] = [ (model._hvar[j, t+1].x-model._hvar[j, t].x) for t in horizon]
+    return sol
