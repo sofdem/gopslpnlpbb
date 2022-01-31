@@ -134,8 +134,8 @@ class HydraulicNetwork:
                     a10[j][i] = val
         return nodeindex, q0, h0, a21, a12, a10
 
-    def _flow_analysis(self, inactive: set, period: int, volumes: dict):
-
+    def _flow_analysis(self, inactive: set, period: int, volumes: dict, stopatviolation):
+        violation = False
         arcs, incidence = self.active_network(inactive)
         nodeindex, q0, h0, a21, a12, a10 = self.build_matrices(arcs, incidence, period, volumes)
         q, h = self.todini_pilati(arcs, q0, h0, a21, a12, a10)
@@ -148,37 +148,44 @@ class HydraulicNetwork:
 
         for k, ((i, j), arc) in enumerate(arcs.items()):
             flow[(i, j)] = q[k][0]
-            self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
-            self.check_bounds((i, j), flow[(i, j)]), f'qbnds a=({i},{j}) t={period}'
-            self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
+            errormsg = self.check_bounds((i, j), flow[(i, j)])
+            if errormsg:
+                if stopatviolation:
+                    return flow, head, errormsg
+                violation = True
+            assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
+            assert self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
 
         # recover the head at removed nodes
         for leaf, (branch, altj) in self.removed_nodes.items():
             assert head[leaf] == 0 and flow[branch] == 0 and (branch not in self.instance.pumps)
             head[leaf] = head[altj]
 
-        return flow, head
+        return flow, head, violation
 
     def check_hloss(self, arc, q, hi, hj):
         hlossval = (arc[2]*abs(q) + arc[1])*q + arc[0]
         if abs(hlossval-hi+hj) > self.feastol:
-            raise ValueError(f"hloss q={q}: {hlossval} != {hi} - {hj} = {hi-hj}")
+            print(f"hloss q={q}: {hlossval} != {hi} - {hj} = {hi-hj}")
+            return False
+        return True
 
     def check_bounds(self, arc, q):
-        qmin = self.instance.arcs[arc].qmin
         if q < self.instance.arcs[arc].qmin - self.feastol:
-            raise ValueError(f"bound q={q} < qmin={qmin}")
-        qmax = self.instance.arcs[arc].qmax
+           return f"lbound q={q} < qmin={self.instance.arcs[arc].qmin}"
         if q > self.instance.arcs[arc].qmax + self.feastol:
-            raise ValueError(f"bound q={q} > qmax={qmax}")
+            return f"ubound q={q} > qmax={self.instance.arcs[arc].qmax}"
+        return
 
     def check_nonnullflow(self, arc, q):
         if self.instance.arcs[arc].nonnull_flow_when_on() and -self.feastol < q < self.feastol:
-            raise ValueError(f"null flow q={q} on active pump")
+            print(f"null flow q={q} on active pump")
+            return False
+        return True
 
     def extended_period_analysis(self, inactive: dict, stopatviolation=True):
         """Run flow analysis progressively on each time period."""
-        violations = []
+        nbviolations = 0
         nperiods = len(inactive)
         volumes = [{} for _ in range(nperiods + 1)]
         volumes[0] = {i: tank.vinit for i, tank in self.instance.tanks.items()}
@@ -186,36 +193,39 @@ class HydraulicNetwork:
         head = {}
 
         for t in range(nperiods):
-            try:
-                flow[t], head[t] = self._flow_analysis(inactive[t], t, volumes[t])
-            except ValueError as ve:
-                violations.append((t+1, ve))
+            flow[t], head[t], errormsg = self._flow_analysis(inactive[t], t, volumes[t], stopatviolation)
+            if errormsg:
+                print(f'violation at {t + 1}: {errormsg}')
                 if stopatviolation:
-                    return flow, head, volumes, violations
+                    return flow, head, volumes, t + 1
+                nbviolations += 1
 
             for i, tank in self.instance.tanks.items():
                 volumes[t + 1][i] = volumes[t][i] + self.instance.flowtovolume() \
                                     * (sum(flow[t][a] for a in self.instance.inarcs(i))
                                        - sum(flow[t][a] for a in self.instance.outarcs(i)))
-                if volumes[t + 1][i] < tank.vmin - self.feastol :
-                    violations.append((t+1, f'capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}'))
+                if volumes[t + 1][i] < tank.vmin - self.feastol:
+                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
+                    nbviolations += 1
                     if stopatviolation:
-                        return flow, head, volumes, violations
-                elif volumes[t + 1][i] > tank.vmax + self.feastol:
-                    violations.append((t+1, f'capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}'))
-                    if stopatviolation:
-                        return flow, head, volumes, violations
+                        return flow, head, volumes, t+1
 
+                elif volumes[t + 1][i] > tank.vmax + self.feastol:
+                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}')
+                    nbviolations += 1
+                    if stopatviolation:
+                        return flow, head, volumes, t+1
 
         head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
             if volumes[nperiods][i] < tank.vinit - self.feastol:
-                violations.append((nperiods, i, volumes[nperiods][i]))
+                print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vmax:.2f}')
+                nbviolations += 1
                 if stopatviolation:
-                    return flow, head, volumes, violations
+                    return flow, head, volumes, nperiods
             head[nperiods][i] = tank.head(volumes[nperiods][i])
 
-        return flow, head, volumes, violations
+        return flow, head, volumes, nbviolations
 
     @staticmethod
     def todini_pilati(arcs, q0, h0, a21, a12, a10):

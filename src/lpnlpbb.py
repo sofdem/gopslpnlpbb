@@ -49,8 +49,7 @@ def _attach_callback_data(model, instance, modes):
     model._adjusttime = time.time()
     model._adjust_solutions = []
 
-    vs = list(model._svar.values())
-    vs.extend(model._qvar.values())
+    vs = [*model._svar.values(), *model._qvar.values()]
     model._lastsol = {'node': -1, 'cost': GRB.INFINITY, 'vars': vs}
 
     model._clonemodel = model.copy()
@@ -76,7 +75,7 @@ def mycallback(m, where):
                   f"oldbest = {oldbest} "
                   f"set solution #{m.cbGet(GRB.Callback.MIPNODE_SOLCNT)}: {lastcost} -> {objval}")
             if objval >= GRB.INFINITY and abs(oldbest-lastcost) > m.Params.MIPGapAbs:
-                solvecvxmodelwithsolution(m, m._lastsol['vals'])
+                cloneandchecksolution(m, m._lastsol['vals'])
                 print("if MILP feasible then the solution must violate a lazy cut")
         # if not m._rootlb:
         #    m._rootlb = m.cbGet(GRB.Callback.MIPNODE_OBJBND)
@@ -124,13 +123,12 @@ def mycallback(m, where):
         costrealsol = GRB.INFINITY
 
         inactive, activity = getplan(m)
-        qreal, hreal, vreal, violation = m._network.extended_period_analysis(inactive)
+        qreal, hreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
 
-        if violation:
-            v = violation[0]
+        if violperiod:
             m._intnodes['unfeas'] += 1
-            nogood_lastperiod = v[0]
-            print(fstring + f" t={v[0]} {v[1]}")
+            nogood_lastperiod = violperiod
+            print(fstring + f" t={violperiod}")
             addnogoodcut(m, _linearnorm(m._svar, nogood_lastperiod, activity), currentnode)
 
         else:
@@ -168,12 +166,11 @@ def mycallback(m, where):
 
 
 def getrealsol(m, activity, qreal):
-    sol = [activity[t][a] for (a, t) in m._svar]
-    for (a, t) in m._qvar:
-        sol.append(qreal[t][a])
+    solx = [activity[t][a] for (a, t) in m._svar]
+    solq = [qreal[t][a] for (a, t) in m._qvar]
     # for (j,t) in m._hvar:
     #     sol.append(hreal[t][j])
-    return sol
+    return [*solx, *solq]
 
 def getplan(m):
     inactive = {t: set() for t in range(m._nperiods)}
@@ -262,16 +259,18 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     if cvxmodel.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % cvxmodel.status)
 
-    print("check solution")
-    optsol =  [v.x for v in cvxmodel._svar.values()]
-    print(optsol)
-    cvxmodel._clonemodel.write("check.lp")
+    if cvxmodel._recordsol and cvxmodel.solcount == 0:
+        return 0, {}
 
-    for v in cvxmodel._qvar.values():
-        optsol.append(v.x)
-    solvecvxmodelwithsolution(cvxmodel, optsol)
+    print("check gurobi best solution")
+    solx =  [v.x for v in cvxmodel._svar.values()]
+    print(solx)
+    # cvxmodel._clonemodel.write("check.lp")
+    solq =  [v.x for v in cvxmodel._qvar.values()]
+    cloneandchecksolution(cvxmodel, [*solx, *solq])
 
     cost = 0
+    plan = {}
     if cvxmodel._solutions:
         bestsol = cvxmodel._solutions[-1]
         plan = bestsol['plan']
@@ -281,10 +280,8 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         if not flow:
             print('best solution found by the time-adjustment heuristic')
             inactive = {t: set(a for a, act in activity_t.items() if not act) for t, activity_t in plan.items()}
-            flow, hreal, volume, violation = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
-            assert violation, 'solution was time-adjusted and should be slightly unfeasible'
-            for v in violation:
-                print(v[1])
+            flow, hreal, volume, nbviolations = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
+            assert nbviolations, 'solution was time-adjusted and should be slightly unfeasible'
             cost = solutioncost(cvxmodel, plan, flow)
             print(f'real plan cost = {cost} / time adjustment cost = {cvxmodel._incumbent}')
         if drawsolution:
@@ -295,7 +292,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         cvxmodel.computeIIS()
         cvxmodel.write(IISFILE)
 
-    return cost
+    return cost, plan
 
 
 def solveconvex(cvxmodel, instance, drawsolution=True):
@@ -308,14 +305,14 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
         print('Optimization was stopped with status %d' % cvxmodel.status)
 
     costreal = 0
+    plan = {}
     if cvxmodel.SolCount:
         inactive, activity = _parse_activity(instance.horizon(), cvxmodel._svar)
         net = HydraulicNetwork(instance, cvxmodel.Params.FeasibilityTol)
-        qreal, hreal, vreal, violations = net.extended_period_analysis(inactive, stopatviolation=False)
-        for v in violations:
-            print(v[1])
-        actreal = {t: {a: (0 if abs(q) < 1e-6 else 1) for a, q in qreal[t].items()} for t in qreal}
-        costreal = solutioncost(cvxmodel, actreal, qreal)
+        qreal, hreal, vreal, nbviolations = net.extended_period_analysis(inactive, stopatviolation=False)
+        print(f"real plan with {nbviolations} violations")
+        plan = {t: {a: (0 if abs(q) < 1e-6 else 1) for a, q in qreal[t].items()} for t in qreal}
+        costreal = solutioncost(cvxmodel, plan, qreal)
 
         if drawsolution:
             graphic.pumps(instance, qreal)
@@ -328,7 +325,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
         cvxmodel.computeIIS()
         cvxmodel.write(IISFILE)
 
-    return costreal
+    return costreal, plan
 
 
 def recordandwritesolution(m, activity, qreal, filename):
@@ -339,7 +336,7 @@ def recordandwritesolution(m, activity, qreal, filename):
     return sol
 
 
-def solvecvxmodelwithsolution(m, vals):
+def cloneandchecksolution(m, vals):
     vars = m._lastsol['vars']
     assert len(vals) == len(vars)
     model = m._clonemodel if m._clonemodel else m.copy()

@@ -59,6 +59,7 @@ FASTBENCH = [
 
 OUTDIR = Path("../output/")
 defaultfilename = Path(OUTDIR, f'resall.csv')
+SOLFILE = Path(OUTDIR, f'solutions.csv')
 
 
 # RECORD (default: gurobi manages incumbent), FATHOM (cut feas int nodes) or CVX (MIP relaxation only)
@@ -103,7 +104,7 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     # cvxmodel.params.FeasibilityTol = 1e-5
 
     print("solve model")
-    costreal = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
+    costreal, plan = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
         else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
 
     stat.fill(cvxmodel, costreal)
@@ -112,6 +113,7 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print(stat.tostr_basic())
 
     cvxmodel.terminate()
+    return costreal, plan
 
 
 def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=True, stat=None, file=defaultfilename):
@@ -119,12 +121,22 @@ def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution
     stat = Stat(parsemode(modes)) if stat is None else stat
     now = datetime.now().strftime("%y%m%d-%H%M")
     print(now)
-    solve(instance, oagap, mipgap, drawsolution, stat)
+    cost, plan = solve(instance, oagap, mipgap, drawsolution, stat)
+    if cost:
+        writeplan(instance, plan, f"{now}, {instid}, {cost},")
     fileexists = os.path.exists(file)
     f = open(file, 'a')
     if not fileexists:
         f.write(f"date, oagap, mipgap, mode, ntk T day, {stat.tocsv_title()}\n")
     f.write(f"{now}, {oagap}, {mipgap}, {stat.getsolvemode()}, {instid}, {stat.tocsv_basic()}\n")
+    f.close()
+
+
+def writeplan(instance, activity, preamb, solfile=SOLFILE):
+    assert len(activity) == instance.nperiods() and len(activity[0]) == len(instance.arcs)
+    plan = {a: [activity[t][a] for t in instance.horizon()] for a in instance.varcs}
+    f = open(solfile, 'a')
+    f.write(f"{preamb} {plan}\n")
     f.close()
 
 
@@ -140,11 +152,11 @@ def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX',
     instance = makeinstance(instid)
     inactive = instance.parsesolution(solfilename)
     network = HydraulicNetwork(instance, feastol=mipgap)
-    flow, hreal, volume, violations = network.extended_period_analysis(inactive, stopatviolation=False)
+    flow, hreal, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
     cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
                                           for a, pump in instance.pumps.items() if a not in inactive[t])
                for t in instance.horizon())
-    print(f'real plan cost (without draw cost) = {cost}')
+    print(f'real plan cost (without draw cost) = {cost} with {nbviolations} violations')
     graphic.pumps(instance, flow)
     graphic.tanks(instance, flow, volume)
 
@@ -183,7 +195,7 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
         # cvxmodel.write("sd.lp")
 
         print("solve model")
-        costreal = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
+        costreal, plan = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
             else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
 
         stat.fill(cvxmodel, costreal)
@@ -194,9 +206,9 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
         cvxmodel.terminate()
 
 
-# solveinstance('FSD s 48 4', modes='', drawsolution=False)
-solveinstance('RIC s 12 3', modes='')
+#solveinstance('FSD s 24 2', modes='', drawsolution=False)
+#solveinstance('RIC s 12 3', modes='')
 # testsolution('RIC s 12 1', "sol.csv")
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-# solvebench(FASTBENCH[:7], modes=None)
+solvebench(FASTBENCH[:7], modes=None)
