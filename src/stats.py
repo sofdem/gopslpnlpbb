@@ -17,10 +17,16 @@ class Stat:
 
     def __init__(self, modes):
         self.modes = modes
-        self.fmt = Stat.basicfmt if self.solveconvex() else dict(Stat.basicfmt, **(Stat.bbfmt))
+        self.fmt = Stat.basicfmt if self._basicformat() else dict(Stat.basicfmt, **(Stat.bbfmt))
         self.all = None
         if self.withadjust():
             self.fmt.update(Stat.adjfmt)
+
+    def _basicformat(self):
+        return self.modes["solve"] in set(['CVX', 'EXIP', 'EXLP'])
+
+    def solvelprelaxation(self):
+        return self.modes["solve"] == 'EXLP'
 
     def solveconvex(self):
         return self.modes["solve"] == 'CVX'
@@ -42,7 +48,7 @@ class Stat:
             'nodes': int(model.NodeCount),
             'iter': model.IterCount}
 
-        if not self.solveconvex():
+        if not self._basicformat():
             self.all['ub'] = model._incumbent if model._solutions else float('inf')
             self.all['gap'] = 100 * (self.all['ub'] - self.all['lb']) / self.all['ub']
             self.all.update(model._intnodes)

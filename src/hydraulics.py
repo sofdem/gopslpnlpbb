@@ -219,7 +219,7 @@ class HydraulicNetwork:
         head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
             if volumes[nperiods][i] < tank.vinit - self.feastol:
-                print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vmax:.2f}')
+                print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vinit:.2f}')
                 nbviolations += 1
                 if stopatviolation:
                     return flow, head, volumes, nperiods
