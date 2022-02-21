@@ -90,6 +90,8 @@ def solve(instance, params, stat, drawsolution):
     print('***********************************************')
     print(instance.tostr_basic())
     print(instance.tostr_network())
+    instance.cc_partition_reservoirs()
+    return
 
     print("generate configurations")
     gentime = time.time()
