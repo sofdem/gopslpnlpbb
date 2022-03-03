@@ -16,8 +16,6 @@ sum_(S,V) V'_(t-1,S,V) * y_(t-1,S,V) == sum_(S,V) V_(t,S,V) * y_(t,S,V) forall t
 
 import gurobipy as gp
 from gurobipy import GRB
-from hydraulics import HydraulicNetwork
-import graphic
 
 
 def build_model(inst, confgen):
@@ -63,41 +61,19 @@ def get_active_config(yvars):
             return ck
 
 
-def solutioncost(inst, status, flows):
-    """ Returns the cost of a solution. """
-    return sum(inst.eleccost(t) * (pump.power[0] * status[t][k] + pump.power[1] * flows[t][k])
-               for k, pump in inst.pumps.items() for t in inst.horizon())
-
-
-def solve(model, instance, drawsolution=True):
+def solve(model):
     """ solve the model then simulates the resulting command plan to check violations or get the real cost/flow. """
     model.optimize()
+
     if model.status != GRB.OPTIMAL:
-        print('Optimization was stopped with status %d' % model.status)
-    feasreal = False
-    costreal = 0
-    plan = {}
+        print('Optimization was stopped with plan %d' % model.status)
+
     if model.SolCount:
         inactive, volprofile = parse_solution(model._confgen, model._yvars)
-        net = HydraulicNetwork(instance, 1e-4)
-        qreal, hreal, vreal, nbviolations = net.extended_period_analysis(inactive, stopatviolation=False)
-        feasreal = (nbviolations == 0)
-        plan = {t: {a: (0 if abs(q) < 1e-6 else 1) for a, q in qreal[t].items()} for t in qreal}
-        costreal = solutioncost(instance, plan, qreal)
-        print(f"costs: MIP = {model.objVal}, simu = {costreal} with {nbviolations} violations")
-        print(f"expected volume profile= {volprofile}")
-        realvolprofile = {}
-        for t, v in enumerate(vreal):
-            realvolprofile[t] = model._confgen.getvolconf(v)
-        print(f"real volume profile= {realvolprofile}")
-        if drawsolution:
-            graphic.pumps(instance, qreal)
-            graphic.tanks(instance, qreal, vreal)
-
+        return inactive
     else:
         iisfile = "exmodel.ilp"
         print(f"write IIS in {iisfile}")
         model.computeIIS()
         model.write(iisfile)
-
-    return feasreal, costreal, plan
+        return None

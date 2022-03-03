@@ -22,8 +22,8 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
 
     qvar = {}  # arc flow
     dhvar = {}  # arc hloss
-    svar = {}  # arc status
-    ivar = {}  # pump ignition status
+    svar = {}  # arc plan
+    ivar = {}  # pump ignition plan
     hvar = {}  # node head
     qexpr = {}  # node inflow
 

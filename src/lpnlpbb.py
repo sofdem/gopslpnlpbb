@@ -123,7 +123,7 @@ def mycallback(m, where):
         costrealsol = GRB.INFINITY
 
         inactive, activity = getplan(m)
-        qreal, hreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
+        qreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
 
         if violperiod:
             m._intnodes['unfeas'] += 1
@@ -257,7 +257,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     cvxmodel.optimize(mycallback)
 
     if cvxmodel.status != GRB.OPTIMAL:
-        print('Optimization was stopped with status %d' % cvxmodel.status)
+        print('Optimization was stopped with plan %d' % cvxmodel.status)
 
     if cvxmodel._recordsol and cvxmodel.solcount == 0:
         return 0, {}
@@ -280,7 +280,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         if not flow:
             print('best solution found by the time-adjustment heuristic')
             inactive = {t: set(a for a, act in activity_t.items() if not act) for t, activity_t in plan.items()}
-            flow, hreal, volume, nbviolations = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
+            flow, volume, nbviolations = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
             assert nbviolations, 'solution was time-adjusted and should be slightly unfeasible'
             cost = solutioncost(cvxmodel, plan, flow)
             print(f'real plan cost = {cost} / time adjustment cost = {cvxmodel._incumbent}')
@@ -302,7 +302,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
     cvxmodel.optimize()
 
     if cvxmodel.status != GRB.OPTIMAL:
-        print('Optimization was stopped with status %d' % cvxmodel.status)
+        print('Optimization was stopped with plan %d' % cvxmodel.status)
 
     costreal = 0
     plan = {}
@@ -347,7 +347,7 @@ def cloneandchecksolution(m, vals):
     print("test real solution / cvx model (without internal cuts nor processing)")
     model.optimize()
     if model.status != GRB.OPTIMAL:
-        print('Optimization was stopped with status %d' % model.status)
+        print('Optimization was stopped with plan %d' % model.status)
         model.computeIIS()
         model.write(IISFILE)
     model.terminate()

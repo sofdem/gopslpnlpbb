@@ -106,8 +106,8 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print("solve model")
     costreal, plan = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
         else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
-
-    stat.fill(cvxmodel, costreal)
+    stat.fill(cvxmodel)
+    stat.fill_realcost(costreal)
     print('***********************************************')
     print(f"solution for {instance.tostr_basic()}")
     print(stat.tostr_basic())
@@ -198,7 +198,8 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
         costreal, plan = bb.solveconvex(cvxmodel, instance, drawsolution=drawsolution) if stat.solveconvex() \
             else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
 
-        stat.fill(cvxmodel, costreal)
+        stat.fill(cvxmodel)
+        stat.fill_realcost(costreal)
         print('***********************************************')
         print(f"solution for {instance.tostr_basic()}")
         print(stat.tostr_basic())
@@ -206,9 +207,9 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
         cvxmodel.terminate()
 
 
-#solveinstance('FSD s 24 2', modes='', drawsolution=False)
-#solveinstance('RIC s 12 3', modes='')
+solveinstance('FSD s 48 1', modes='', drawsolution=True)
+# solveinstance('RIC s 12 3', modes='')
 # testsolution('RIC s 12 1', "sol.csv")
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-solvebench(FASTBENCH[:7], modes=None)
+# solvebench(FASTBENCH[:7], modes=None)

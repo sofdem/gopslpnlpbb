@@ -3,272 +3,216 @@
 """
 Created on Fri Feb  4 10:48:46 2022
 
+With networkanalysis.py should replace hydraulics.py:
+PotentialNetwork represents the network (or a component) directly by its incidence matrix
+after reordering and reindexing nodes and arcs (make sure to observe the order !).
+Run network analysis (Todini-Pilati) for any fixed values of demand or head on each node
+after masking inactive arcs and zero-demand leaves.
+(head nodes and non-zero demand nodes should not become disconnected: no verification there)
+It is also possible to keep an history of the computations.
+
 @author: Sophie Demassey
 """
 
 import numpy as np
-from copy import deepcopy
-from instance import _Junction
-from instance import _Node
-from instance import _Arc
 
-NEWTON_TOL = 1e-8
 
 class PotentialNetwork:
-    """Weakly connected potential network."""
+    """a weakly connected potential network with controllable arcs and two types of nodes: demand or reservoir."""
 
-    def __init__(self, feastol: float, arcs: list, nbfixarcs: int, nodes: list, nbdemnodes: int, resistances: list):
+    def __init__(self, nd0nodes: int, nvarcs: int, hloss: list, history: bool, a: list, d: list, h: list):
         """Create Potential network."""
-        self.feastol = feastol
+        self.nd0nodes = nd0nodes
+        # assert self.nd0nodes < len(d), 'a component has no demand'
 
-        self.arcs = arcs
-        self.invarcs = {val: idx for idx, val in enumerate(self.arcs)}
-        self.nbfixarcs = nbfixarcs
+        dnodes = {nid: idx for idx, nid in enumerate(d)}
+        hnodes = {nid: len(d) + idx for idx, nid in enumerate(h)}
+        self.nodes = {**dnodes, **hnodes}
+        assert len(d) + len(h) == len(self.nodes)
+        print(f"nodes = {self.nodes}")
 
-        self.nodes = nodes
-        self.invnodes = {val: idx for idx, val in enumerate(self.nodes)}
-        self.nbdemnodes = nbdemnodes
+        assert len(hloss) == len(a)
+        self.arcs = {aid: idx for idx, aid in enumerate(a)}
+        self._arcs = [(self.nodes[aid[0]], self.nodes[aid[1]]) for aid in a]
+        print(f"arcs = {self.arcs}")
+        self._hloss = np.array(hloss)
 
-        self.incidence = self._build_incidence()
-        self.maskconfigs = self._build_maskconfigs()
+        incidence_transpose = PotentialNetwork._build_incidence_transpose(len(self.nodes), self._arcs)
+        self._dincidence_transpose = incidence_transpose[:, :len(d)]
+        self._hincidence_transpose = incidence_transpose[:, len(d):]
+        self._prev_inactivearcs = set()
+        self._mask_a = np.ones(len(self._arcs), dtype=bool)
+        self._mask_d = np.ones(len(d), dtype=bool) if self.nd0nodes else None
+        self._masked_a = self._masked_d = False
 
-        assert self._check_network(self.incidence)
+        self.history = {} if history else None
+        self.hasvarcs = nvarcs > 0
 
-    def _build_incidence(self):
-        """Get the incidence matrix."""
-        incidence = np.zeros(len(self.nodes), len(self.arcs))
-        for ida, arc in enumerate(self.arcs):
-            i = self.invnodes[arc.nodes[0]]
-            j = self.invnodes[arc.nodes[1]]
-            incidence[i, ida] = -1
-            incidence[j, ida] = 1
-        return incidence
-
-    # @todo store for each possible command in 2^(len(arcs)-nbfixedarcs) :
-    # the subsets of active nodes/rows and active arcs/columns indices in the incidence matrix according to the command
-    # the set of arcs removed by filtering leaf junctions with zero demand
-    # def _build_maskconfigs(self, command: int)
-
-    def build_matrices(self, arcs, command: int, demand: dict, volumes: list):
-        """Build the matrices for the Todini-Pilati algorithm.
-        demand: the demand value for all junctiom nodes
-        """
-        actarcs  = self.maskconfig[command][0]
-        actnodes = self.maskconfig[command][1]
-        remarcs  = self.maskconfig[command][2]
-        incidence = self.incidence[np.ix(actnodes, actarcs)]
-
-        q0 = [demand[self.arcs[actnidx]] for actnidx in actnodes if actnidx < self.nbdemnodes]
-        h0 = [head[self.arcs[actnidx]] for actnidx in actnodes if actnidx < self.nbdemnodes]
-        nodeindex = {}
-
-            # create q and h0: the column vectors of fixed demand and fixed head nodes
-            demand = []
-            head = []
-            ndemand = 0
-            nhead = 0
-                if isinstance(node, _Junction):
-            for nodeid in incidence:
-                node = self.instance.nodes[nodeid]
-                    demand.append(node.demand(period))
-                    nodeindex[nodeid] = (True, ndemand)
-                    ndemand += 1
-                else:
-                    nodehead = node.head(period if isinstance(node, inst._Reservoir) else volumes[nodeid])
-                    head.append(nodehead)
-                    nodeindex[nodeid] = (False, nhead)
-                    nhead += 1
-
-            q0 = np.array(demand).reshape(ndemand, 1)
-            h0 = np.array(head).reshape(nhead, 1)
-
-            # create the incidence matrices over fixed demand and fixed head nodes
-            # print('SIZE = ', ndemand, len(arcs), nhead)
-            a21 = np.zeros((ndemand, len(arcs)))
-            a12 = np.zeros((len(arcs), ndemand))
-            a01 = np.zeros((nhead, len(arcs)))
-            a10 = np.zeros((len(arcs), nhead))
-
-            for (inout, val) in {(1, 1), (0, -1)}:
-                for j, arc in enumerate(arcs):
-                    (isDemand, i) = nodeindex.get(arc[inout])
-                    if isDemand:
-                        a21[i][j] = val
-                        a12[j][i] = val
-                    else:
-                        a01[i][j] = val
-                        a10[j][i] = val
-            return nodeindex, q0, h0, a21, a12, a10
-
-    def _check_network(self, incidence):
-        check = True
-        for nodeid, arcs in incidence.items():
-            if len(arcs) == 0:
-                check = False
-                print("Error: isolated node", nodeid)
-            node = self.instance.nodes[nodeid]
-            if isinstance(node, inst._Junction) and node.dmean == 0 and len(arcs) == 1:
-                check = False
-                print("Error: leaf no-demand junction", nodeid)
-        return check
-
-    def _remove_arc_from_junction(self, j, arc, incidence):
-        removejunction = False
-        assert arc in incidence[j], f'arc {arc} not in incidence[{j}]= {incidence[j]}'
-        incidence[j].remove(arc)
-        if len(incidence[j]) == 0:
-            del incidence[j]
-        elif len(incidence[j]) == 1:
-            node = self.instance.nodes[j]
-            removejunction = isinstance(node, inst._Junction) and node.dmean == 0
-        return removejunction
-
-    # !!! merge active_network and build_TP_matrices, i.e. directly work on the incidence matrices
-    # !!! regenerate from the period before if no new active element; identical OR new inactives
-    def active_network(self, inactive):
-        """Remove the inactive pumps and valves then the non-demand leaf nodes, recursively."""
-        arcs = deepcopy(self.arcs)
-        incidence = deepcopy(self.incidence)
-        self.removed_nodes = {}
-
-        leavestoremove = set()
-        for (i, j) in inactive:
-            del arcs[(i, j)]
-            if self._remove_arc_from_junction(i, (i, j), incidence):
-                leavestoremove.add(i)
-            if self._remove_arc_from_junction(j, (i, j), incidence):
-                leavestoremove.add(j)
-
-        while leavestoremove:
-            leaf = leavestoremove.pop()
-            assert incidence.get(leaf), f'node {leaf} has already been removed'
-            assert len(incidence[leaf]) == 1, f'{leaf} not a leaf: {incidence[leaf]}'
-            branch = incidence[leaf].pop()
-            del incidence[leaf]
-            del arcs[branch]
-            altj = branch[1] if (branch[0] == leaf) else branch[0]
-            self.removed_nodes[leaf] = (branch, altj)
-            if self._remove_arc_from_junction(altj, branch, incidence):
-                leavestoremove.add(altj)
-
-        assert arcs, "the active network is empty"
-        return arcs, incidence
-
-    def _flow_analysis(self, inactive: set, period: int, volumes: dict, stopatviolation):
-        violation = False
-        arcs, incidence = self.active_network(inactive)
-        nodeindex, q0, h0, a21, a12, a10 = self.build_matrices(arcs, incidence, period, volumes)
-        q, h = self.todini_pilati(arcs, q0, h0, a21, a12, a10)
-
-        flow = {a: 0 for a in self.instance.arcs}
-        head = {n: 0 for n in self.instance.nodes}
-
-        for node, (isDemand, i) in nodeindex.items():
-            head[node] = h[i][0] if isDemand else h0[i][0]
-
-        for k, ((i, j), arc) in enumerate(arcs.items()):
-            flow[(i, j)] = q[k][0]
-            errormsg = self.check_bounds((i, j), flow[(i, j)])
-            if errormsg:
-                if stopatviolation:
-                    return flow, head, errormsg
-                violation = True
-            assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
-            assert self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
-
-        # recover the head at removed nodes
-        for leaf, (branch, altj) in self.removed_nodes.items():
-            assert head[leaf] == 0 and flow[branch] == 0 and (branch not in self.instance.pumps)
-            head[leaf] = head[altj]
-
-        return flow, head, violation
-
-    def check_hloss(self, arc, q, hi, hj):
-        hlossval = (arc[2]*abs(q) + arc[1])*q + arc[0]
-        if abs(hlossval-hi+hj) > self.feastol:
-            print(f"hloss q={q}: {hlossval} != {hi} - {hj} = {hi-hj}")
-            return False
-        return True
-
-    def check_bounds(self, arc, q):
-        if q < self.instance.arcs[arc].qmin - self.feastol:
-           return f"lbound q={q} < qmin={self.instance.arcs[arc].qmin}"
-        if q > self.instance.arcs[arc].qmax + self.feastol:
-            return f"ubound q={q} > qmax={self.instance.arcs[arc].qmax}"
-        return
-
-    def check_nonnullflow(self, arc, q):
-        if self.instance.arcs[arc].nonnull_flow_when_on() and -self.feastol < q < self.feastol:
-            print(f"null flow q={q} on active pump")
-            return False
-        return True
-
-    def extended_period_analysis(self, inactive: dict, stopatviolation=True):
-        """Run flow analysis progressively on each time period."""
-        nbviolations = 0
-        nperiods = len(inactive)
-        volumes = [{} for _ in range(nperiods + 1)]
-        volumes[0] = {i: tank.vinit for i, tank in self.instance.tanks.items()}
-        flow = {}
-        head = {}
-
-        for t in range(nperiods):
-            flow[t], head[t], errormsg = self._flow_analysis(inactive[t], t, volumes[t], stopatviolation)
-            if errormsg:
-                print(f'violation at {t + 1}: {errormsg}')
-                if stopatviolation:
-                    return flow, head, volumes, t + 1
-                nbviolations += 1
-
-            for i, tank in self.instance.tanks.items():
-                volumes[t + 1][i] = volumes[t][i] + self.instance.flowtovolume() \
-                                    * (sum(flow[t][a] for a in self.instance.inarcs(i))
-                                       - sum(flow[t][a] for a in self.instance.outarcs(i)))
-                if volumes[t + 1][i] < tank.vmin - self.feastol:
-                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
-                    nbviolations += 1
-                    if stopatviolation:
-                        return flow, head, volumes, t+1
-
-                elif volumes[t + 1][i] > tank.vmax + self.feastol:
-                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}')
-                    nbviolations += 1
-                    if stopatviolation:
-                        return flow, head, volumes, t+1
-
-        head[nperiods] = {}
-        for i, tank in self.instance.tanks.items():
-            if volumes[nperiods][i] < tank.vinit - self.feastol:
-                print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vinit:.2f}')
-                nbviolations += 1
-                if stopatviolation:
-                    return flow, head, volumes, nperiods
-            head[nperiods][i] = tank.head(volumes[nperiods][i])
-
-        return flow, head, volumes, nbviolations
+    def removehistory(self):
+        self.history = None
 
     @staticmethod
-    def todini_pilati(arcs, q0, h0, a21, a12, a10):
-        """Apply the Todini Pilati algorithm of flow analysis, return flow and head."""
-        ident = np.identity(len(arcs))
-        q = np.full((len(arcs), 1), 10)
-        h = np.zeros((1, len(q0)))
+    def _build_incidence_transpose(nnodes, arcs):
+        """Build the incidence matrix."""
+        incidence_transpose = np.zeros((len(arcs), nnodes))
+        for idx, arc in enumerate(arcs):
+            incidence_transpose[idx, arc[0]] = -1
+            incidence_transpose[idx, arc[1]] = 1
+        return incidence_transpose
 
-        a11 = np.zeros((len(arcs), len(arcs)))
-        d = np.zeros((len(arcs), len(arcs)))
+    def _mask_inactivearcs(self, inactivearcs: tuple):
+        # same configuration as previous execution: do not change masks
+        if self._prev_inactivearcs == inactivearcs:
+            return
+        self._prev_inactivearcs = inactivearcs
+        # no arc to disactivate: no mask
+        if len(inactivearcs) == 0:
+            self._masked_a = self._masked_d = False
+            return
+        # recompute masks
+        self._mask_a.fill(True)
+        d0_tocheck = set()
+        # mask inactive arcs
+        for aid in inactivearcs:
+            aidx = self.arcs[aid]
+            self._mask_a[aidx] = False
+            if self._mask_d is not None:
+                for nidx in self._arcs[aidx]:
+                    if nidx < self.nd0nodes:
+                        d0_tocheck.add(nidx)
+        self._masked_a = True
+        # recursively mask d0 leaves
+        if d0_tocheck:
+            self._masked_d = True
+            self._mask_d[:self.nd0nodes] = True
+            nmasknodes = self._mask_d0leaf(d0_tocheck, 0)
+            self._masked_d = nmasknodes > 0
+        else:
+            self._masked_d = False
+
+    def _mask_d0leaf(self, tocheck, nmasked):
+        # no d0 node to check
+        if not tocheck:
+            return nmasked
+        nidx = tocheck.pop()
+        # d0 node is already masked
+        if not self._mask_d[nidx]:
+            return nmasked
+        arcs = np.nonzero((self._dincidence_transpose[:, nidx] != 0) & (self._mask_a == True))[0]
+        assert len(arcs) > 0
+        # d0 node is a leaf: mask node & arc and check adjacent node
+        if len(arcs) == 1:
+            aidx = arcs[0]
+            self._mask_d[nidx] = False
+            self._mask_a[aidx] = False
+            nmasked += 1
+            arc = self._arcs[aidx]
+            adjn = arc[1] if arc[0] == nidx else arc[0]
+            if adjn < self.nd0nodes and self._mask_d[adjn]:
+                tocheck.add(adjn)
+        return self._mask_d0leaf(tocheck, nmasked)
+
+    def flow_analysis(self, inactivearcs: tuple, fixeddemand: list, fixedhead: list, feastol: float):
+        configid, flow = self.check_history(inactivearcs, fixeddemand, fixedhead)
+        if flow:
+            # print(f"skip calculation for {configid}: flow = {flow}")
+            return flow
+
+        self._mask_inactivearcs(inactivearcs)
+        aix = self._mask_a if self._masked_a else None
+        dix = self._mask_d if self._masked_d else None
+
+        # subgraph is the entire graph => no mask
+        if aix is None:
+            assert dix is None
+            hloss = self._hloss
+            a10 = self._hincidence_transpose
+            a12 = self._dincidence_transpose
+        # subgraph is empty => flow is 0
+        elif not aix.any():
+            flow = {aid: 0 for aid, aidx in self.arcs.items()}
+            self.record_history_nullflow(configid, flow)
+            return flow
+        else:
+            # get the matrices restricted to the subgraph
+            hloss = self._hloss[aix]
+            a10 = self._hincidence_transpose[aix]
+            a12 = self._dincidence_transpose[aix] if dix is None else self._dincidence_transpose[np.ix_(aix, dix)]
+
+        fd = np.array(fixeddemand)
+        q0 = fd if dix is None else fd[dix]
+        h0 = np.array(fixedhead)
+
+        q = self.todini_pilati(hloss, q0[:, np.newaxis], h0[:, np.newaxis], a12, a10, feastol)
+        assert q.shape == (hloss.shape[0], 1), f"{q.shape} != ({hloss.shape[0]}, 1)"
+        if aix is None:
+            return {aid: q[aidx, 0] for aid, aidx in self.arcs.items()}
+        # @todo use np.maskedarray instead
+        offset = 0
+        flow = {}
+        for aid, aidx in self.arcs.items():
+            if self._mask_a[aidx]:
+                flow[aid] = q[aidx-offset, 0]
+            else:
+                flow[aid] = 0
+                offset += 1
+        assert len(q) + offset == len(self.arcs)
+
+        self.record_history(configid, flow)
+        return flow
+
+    @staticmethod
+    def todini_pilati(hloss, q0, h0, a12, a10, feastol):
+        """Apply the Todini Pilati algorithm of flow analysis, return flow and head."""
+        narcs = hloss.shape[0]
+        ndnodes = q0.shape[0]
+        nhnodes = h0.shape[0]
+        assert a12.shape[0] == narcs and a10.shape[0] == narcs
+        assert a12.shape[1] == ndnodes and a10.shape[1] == nhnodes
+        # print(f"q0 =: {q0}, h0= {h0}, hloss={hloss}")
+
+        a21 = a12.transpose()
+        ident = np.identity(narcs)
+        q = np.full((narcs, 1), 10)
 
         gap = 1
-        while gap > NEWTON_TOL:
+        while gap > feastol:
             qold = np.copy(q)
-            for i, (a, arc) in enumerate(arcs.items()):
-                a11[i][i] = arc[2] * abs(q[i][0]) + arc[1] + arc[0] / q[i][0]
-                d[i][i] = (2 * arc[2] * abs(q[i][0]) + arc[1]) ** (-1)
-
+            a11 = np.diag([hloss[i, 2] * abs(q[i, 0]) + hloss[i, 1] + hloss[i, 0] / q[i, 0] for i in range(narcs)])
+            d = np.diag([(2 * hloss[i, 2] * abs(q[i, 0]) + hloss[i, 1]) ** (-1) for i in range(narcs)])
             h = - np.linalg.inv(a21 @ d @ a12) @ (a21 @ d @ (a11 @ q + a10 @ h0) + q0 - a21 @ q)
             q = (ident - d @ a11) @ q - d @ (a12 @ h + a10 @ h0)
+            gap = np.absolute(q - qold).sum() / np.absolute(q).sum()
+        assert PotentialNetwork.check_hloss(q, h, h0, hloss, a10, a12, feastol)
+        return q
 
-            # !!! assert q!=0 and q[pump]>0
-            gap = sum(abs(q[i][0] - qold[i][0]) for i, arc in enumerate(arcs)) \
-                / sum(abs(q[i][0]) for i, arc in enumerate(arcs))
+    @staticmethod
+    def check_hloss(q, h, h0, hloss, a10, a12, feastol):
+        narcs = hloss.shape[0]
+        a11 = np.diag([hloss[i, 2] * abs(q[i, 0]) + hloss[i, 1] + hloss[i, 0] / q[i, 0] for i in range(narcs)])
+        hlh = a12 @ h + a10 @ h0
+        hlq = a11 @ q
+        hlossdiff = np.absolute(hlh + hlq) > feastol
+        if hlossdiff.any():
+            print(f"hloss diff: {hlh[hlossdiff]} != {hlq[hlossdiff]}")
+            return False
+        return True
 
-        return q, h
+    def check_history(self, inactivearcs: tuple, demand: list, head: list):
+        if self.history is None:
+            return False, False
+        configid = ('N', *inactivearcs)
+        flow = self.history.get(configid, False)
+        if flow:
+            return configid, flow
+        configid = (*demand, *head, *inactivearcs)
+        return configid, self.history.get(configid, False)
+
+    def record_history(self, configid: tuple, flow: dict):
+        if self.history is not None:
+            self.history[configid] = flow
+
+    def record_history_nullflow(self, inactivearcs: tuple, flow: dict):
+        if self.history is not None:
+            configid = ('N', *inactivearcs)
+            self.history[configid] = flow

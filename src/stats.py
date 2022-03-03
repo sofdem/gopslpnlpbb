@@ -11,7 +11,7 @@ from gurobipy import GRB
 class Stat:
     """Statistics for solving one instance."""
 
-    basicfmt = {'ub': 2, 'realub': 2, 'lb': 2, 'gap': 1, 'cpu': 1, 'nodes': 0}
+    basicfmt = {'realub': 2, 'ub': 2, 'lb': 2, 'gap': 1, 'cpu': 1, 'nodes': 0}
     bbfmt = {'unfeas': 0, 'feas': 0, 'adjust': 0, 'cpu_cb': 1, 'ub_best': 2, 'cpu_best': 1, 'ub_1st': 2, 'cpu_1st': 1}
     adjfmt = {'nb_adj': 0, 'ub_adj': 2, 'cpu_adj': 1, 'ub_1st_adj': 2, 'cpu_1st_adj': 1}
 
@@ -23,7 +23,7 @@ class Stat:
             self.fmt.update(Stat.adjfmt)
 
     def _basicformat(self):
-        return self.modes["solve"] in set(['CVX', 'EXIP', 'EXLP'])
+        return self.modes["solve"] in {'CVX', 'EXIP', 'EXLP'}
 
     def solvelprelaxation(self):
         return self.modes["solve"] == 'EXLP'
@@ -37,12 +37,16 @@ class Stat:
     def getsolvemode(self):
         return self.modes["solve"]
 
-    def fill(self, model, costreal):
+    def fill_realcost(self, realub):
+        assert not self.all['realub']
+        self.all['realub'] = realub
+
+    def fill(self, model):
         self.all = {
-            'status': model.status,
+            'plan': model.status,
             'cpu': model.Runtime,
             'ub': model.objVal if model.status != GRB.INFEASIBLE else float('inf'),
-            'realub': costreal,
+            'realub': 0,
             'lb': model.objBound,
             'gap': model.MIPGap * 100,
             'nodes': int(model.NodeCount),

@@ -143,10 +143,10 @@ class _Arc:
         self.hloss = hloss
         self.control = False
 
-    def abs_qmin(self):
+    def abs_qmin(self) -> float:
         return self.qmin
 
-    def abs_qmax(self):
+    def abs_qmax(self) -> float:
         return self.qmax
 
     def update_qbounds(self, qmin, qmax):
@@ -202,10 +202,10 @@ class _ControllableArc(_Arc):
         self.dhmax = dhmax
         self.control = True
 
-    def abs_qmin(self):
+    def abs_qmin(self) -> float:
         return min(0, self.qmin)
 
-    def abs_qmax(self):
+    def abs_qmax(self) -> float:
         return max(0, self.qmax)
 
     def update_dhbounds(self, dhmin, dhmax):
@@ -326,12 +326,12 @@ class Instance:
         return self.incidence[node, 'out']
 
     def inflowmin(self, node):
-        return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
+        return (sum(self.arcs[a].abs_qmin for a in self.inarcs(node))
                 - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
 
     def inflowmax(self, node):
         return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
-                - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
+                - sum(self.arcs[a].abs_qmin for a in self.outarcs(node)))
 
     def flowtoheight(self, tank):
         return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)
@@ -558,28 +558,7 @@ class Instance:
         inactive = {t: set((A[0], A[1]) for A in data[1:] if A[t + 2] == '0') for t in self.horizon()}
         return inactive
 
-    def cc_dfs(self, nid, ccn, cca, ccnum):
-        if not isinstance(self.nodes[nid], _Junction):
-            ccn[nid].add(ccnum)
-        elif ccn[nid] == 0:
-            ccn[nid] = ccnum
-            for aid in self.inarcs(nid):
-                cca[aid] = ccnum
-                self.cc_dfs(aid[0], ccn, cca, ccnum)
-            for aid in self.outarcs(nid):
-                cca[aid] = ccnum
-                self.cc_dfs(aid[1], ccn, cca, ccnum)
-
-    def cc_partition_reservoirs(self):
-        ccn = {nid: 0 if isinstance(node, _Junction) else set() for nid, node in self.nodes.items()}
-        cca = {aid: 0 for aid in self.arcs}
-        ccnum = 0
-        for nid in self.nodes:
-            if ccn[nid] == 0:
-                ccnum += 1
-                self.cc_dfs(nid, ccn, cca, ccnum)
-
-        print(f"{ccnum} partitions:")
-        for k in range (1, ccnum+1):
-            print(f"{k}: {[n for n, cc in ccn.items() if (isinstance(cc, set) and k in cc ) or k == cc]}")
-            print(f"{k}: {[a for a, cc in cca.items() if k == cc]}")
+    def solutioncost(self, plan, flows):
+        """ Returns the cost of a solution. """
+        return sum(self.eleccost(t) * (pump.power[0] * plan[t][k] + pump.power[1] * flows[t][k])
+                   for k, pump in self.pumps.items() for t in self.horizon())
