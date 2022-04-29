@@ -150,7 +150,7 @@ def build_common_model(inst: Instance, Z, C, D, P0, P1, m_, n_, k, t, mode_BT, o
 
 
 
-    strongdualityconstraints(inst, t, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
+###    strongdualityconstraints(inst, t, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
     
 
     binarydependencies(inst, t, milp, svar, nperiods, horizon)

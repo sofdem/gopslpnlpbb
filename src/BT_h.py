@@ -143,7 +143,7 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
 
 
 
-#    strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
+    strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
 
     binarydependencies(inst, milp, ivar, svar, nperiods, horizon)
 

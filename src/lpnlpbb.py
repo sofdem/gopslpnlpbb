@@ -348,6 +348,5 @@ def cloneandchecksolution(m, vals):
     model.optimize()
     if model.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % model.status)
-        model.computeIIS()
-        model.write(IISFILE)
+
     model.terminate()
