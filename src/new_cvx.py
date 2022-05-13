@@ -120,6 +120,8 @@ def build_model(inst: Instance, Z, C, D, P0, P1, oagap: float, arcvals=None):
 
         for j, tank in inst.tanks.items():
             milp.addConstr(hvar[j, t+1] - hvar[j, t] == inst.flowtoheight(tank) * qexpr[j, t], name=f'fc({j},{t})')
+            milp.addConstr(qexpr[j, t]<= Z[j, t][1]+0.01)
+            milp.addConstr(qexpr[j, t]>= Z[j, t][0]-0.01)
 
 
                            
@@ -148,7 +150,7 @@ def build_model(inst: Instance, Z, C, D, P0, P1, oagap: float, arcvals=None):
                 milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpu{n}({i},{j},{t})')
 
 
-    strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
+####    strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
 
     binarydependencies(inst, milp, ivar, svar, nperiods, horizon)
 

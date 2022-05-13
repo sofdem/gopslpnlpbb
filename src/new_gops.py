@@ -20,6 +20,7 @@ import copy
 import BT_one_st
 import BT_h
 import new_cvx
+import bt_h_
 
 OA_GAP = 1e-2
 MIP_GAP = 1e-6
@@ -287,7 +288,7 @@ def bound_tight(instance, oagap, arcvals= None):
     C= pump_off_dic
     D= tank_lev_dic
     
-    for tau in range(0, 2):
+    for tau in range(0, 3):
     
         Y=0
         N=0
@@ -310,8 +311,10 @@ def bound_tight(instance, oagap, arcvals= None):
                         P0={**P0, **prob_zero}
                 
                     else:
-    
-                        arc_min_iter= BT_one_st.build_common_model(instance, Z, C, D, P0, P1, i, j, k, t,  'ARC_MIN', 'full_SOS', accuracy=0.01, envelop=0.05, oagap=OA_GAP, arcvals=None)
+                        if tau == 0:
+                            arc_min_iter= BT_one_st.build_common_model(instance, Z, C, D, P0, P1, i, j, k, t,  'ARC_MIN', 'oa_cuts', accuracy=0.01, envelop=0.05, oagap=OA_GAP, arcvals=None)
+                        else:
+                            arc_min_iter= BT_one_st.build_common_model(instance, Z, C, D, P0, P1, i, j, k, t,  'ARC_MIN', 'full_SOS', accuracy=0.01, envelop=0.05, oagap=OA_GAP, arcvals=None)
                         arc_min_iter.optimize()
                         arc_min_iter1= arc_min_iter.getObjective()
                         
@@ -320,8 +323,10 @@ def bound_tight(instance, oagap, arcvals= None):
         
                         if arc_min_iter.status == 2:
                             arc_min_it= arc_min_iter1.getValue()
-
-                            arc_max_iter= BT_one_st.build_common_model(instance, Z, C, D, P0, P1, i, j, k, t,  'ARC_MAX', 'full_SOS', accuracy=0.01, envelop=0.05, oagap=OA_GAP, arcvals=None)
+                            if tau == 0:
+                                arc_max_iter= BT_one_st.build_common_model(instance, Z, C, D, P0, P1, i, j, k, t,  'ARC_MAX', 'oa_cuts', accuracy=0.01, envelop=0.05, oagap=OA_GAP, arcvals=None)
+                            else:
+                                arc_max_iter= BT_one_st.build_common_model(instance, Z, C, D, P0, P1, i, j, k, t,  'ARC_MAX', 'full_SOS', accuracy=0.01, envelop=0.05, oagap=OA_GAP, arcvals=None)
                             arc_max_iter.optimize()
                             arc_max_iter1= arc_max_iter.getObjective()
                             arc_max_it= arc_max_iter1.getValue()
@@ -422,29 +427,32 @@ def bound_tight(instance, oagap, arcvals= None):
                 
         for K, k in instance.tanks.items():
             for t_ in range(1, len(list(instance.horizon()))):
-                if instance.name == 'Richmond':
-        
-                    h_min_milp= BT_h.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'LP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= True, two_h= False, oagap=OA_GAP, arcvals=None)
-                    h_max_milp= BT_h.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'LP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= False, two_h= False, oagap=OA_GAP, arcvals=None)
+                if tau>=2:
+                    pass
                 else:
-                    h_min_milp= BT_h.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'MILP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= True, two_h= False, oagap=OA_GAP, arcvals=None)
-                    h_max_milp= BT_h.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'MILP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= False, two_h= False, oagap=OA_GAP, arcvals=None)        
-                h_min_milp.optimize()
-                h_max_milp.optimize()
+                    if instance.name == 'Richmond':
         
-                h_min_milp_= h_min_milp.getObjective()
-                h_max_milp_= h_max_milp.getObjective()
+                        h_min_milp= bt_h_.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'MILP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= True, two_h= False, oagap=OA_GAP, arcvals=None)
+                        h_max_milp= bt_h_.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'MILP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= False, two_h= False, oagap=OA_GAP, arcvals=None)
+                    else:
+                        h_min_milp= BT_h.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'MILP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= True, two_h= False, oagap=OA_GAP, arcvals=None)
+                        h_max_milp= BT_h.build_model_BT_h(instance, Z, C, D, P0, P1, K, t_, 'MILP', 'oa_cuts', accuracy=0.1, envelop=0.5, Minim= False, two_h= False, oagap=OA_GAP, arcvals=None)        
+                    h_min_milp.optimize()
+                    h_max_milp.optimize()
+        
+                    h_min_milp_= h_min_milp.getObjective()
+                    h_max_milp_= h_max_milp.getObjective()
                 
-                h_min= h_min_milp.ObjBound
-                h_max= h_max_milp.ObjBound
+                    h_min= h_min_milp.ObjBound
+                    h_max= h_max_milp.ObjBound
         
 #                h_min= h_min_milp_.getValue()
 #                h_max= h_max_milp_.getValue()
 
         
-                bt_h_milp= dict([((K, t_), [max(h_min-0.0001, D[K, t_][0]), min(h_max+0.0001, D[K, t_][1])]) ])
+                    bt_h_milp= dict([((K, t_), [max(h_min-0.0001, D[K, t_][0]), min(h_max+0.0001, D[K, t_][1])]) ])
         
-                D={**D, **bt_h_milp}
+                    D={**D, **bt_h_milp}
                 
     return Z, C, D, P0, P1
 
@@ -509,4 +517,4 @@ def solveinstance_BT(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolut
     f.write(f"{now}, {oagap}, {mipgap}, {stat.getsolvemode()}, {instid}, {stat.tocsv_basic()}\n")
     f.close()
     
-solveinstance_BT('RIC s 12 2', modes='', drawsolution=False)
+solveinstance_BT('RIC s 12 3', modes='', drawsolution=False)

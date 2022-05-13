@@ -49,8 +49,17 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
 
     nperiods = inst.nperiods()
     horizon = inst.horizon()
+    if t_>=3 and t_<= nperiods-3:
+        TT= range(t_-3, t_+3)
+    elif t_<= 3:
+        TT= range(0, t_+2)
+    elif nperiods-4 <= t_:
+        TT= range(t_-5, nperiods)
+    
+        
+        
 
-    for t in horizon:
+    for t in TT:
         for (i, j), pump in inst.pumps.items():
             ivar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'ik({i},{j},{t})')
 
@@ -64,6 +73,9 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
             lbt = tank.head(tank.vinit) if t == 0 else D[j, t][0]
             ubt = tank.head(tank.vinit) if t == 0 else D[j, t][1]
             hvar[j, t] = milp.addVar(lb=lbt, ub=ubt, name=f'ht({j},{t})')
+            if t < nperiods-1:
+                
+                hvar[j, t+1]= milp.addVar(lb=D[j, t+1][0], ub=D[j, t+1][1], name=f'ht({j},{t})')
         milp.update()
 
         for (i, j), a in inst.arcs.items():
@@ -106,7 +118,7 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
     milp.update()
 
     # FLOW CONSERVATION
-    for t in horizon:
+    for t in TT:
         for j in inst.nodes:
             qexpr[j, t] = gp.quicksum(qvar[a, t] for a in inst.inarcs(j)) \
                           - gp.quicksum(qvar[a, t] for a in inst.outarcs(j))
@@ -122,11 +134,11 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
     for j, res in inst.reservoirs.items():
         if res.drawmax:
             milp.addConstr(res.drawmax >=
-                           inst.flowtovolume() * gp.quicksum(qexpr[j, t] for t in horizon), name=f'w({j})')
+                           inst.flowtovolume() * gp.quicksum(qexpr[j, t] for t in TT), name=f'w({j})')
 
     # CONVEXIFICATION OF HEAD-FLOW
     for (i, j), arc in inst.arcs.items():
-        for t in horizon:
+        for t in TT:
             x = svar[(i, j), t] if arc.control else 1
             if oa_types == 'full_SOS':
                 f_SOS(milp, arc, i, j, t, x, dhvar, hvar, qvar, Z, oagap, accuracy, envelop, True)
@@ -143,9 +155,9 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
 
 
 
-    strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
+###    strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
 
-    binarydependencies(inst, milp, ivar, svar, nperiods, horizon)
+    binarydependencies(inst, milp, ivar, svar, nperiods, TT)
 
     if arcvals:
         postbinarysolution(inst, arcvals, horizon, svar)
@@ -174,96 +186,24 @@ def build_model_BT_h(inst: Instance, Z, C, D, P0, P1, k, t_, mode_h_BT , oa_type
     return milp
 
 
-def strongdualityconstraints(inst, Z, C, D, milp, hvar, qvar, svar, dhvar, qexpr, horizon, withoutz):
-    print("#################  STRONG DUALITY: 5 gvar(pipe) + 10 gvar (pump)")
-    # strong duality constraint: sum_a gvar[a,t] + sdexpr[t] <= 0
-    gvar = {}    # arc component:    x_a * (\Phi_a(q_a) - \Phi_a(\phi^{-1}(h_a)) + h_a\phi^{-1}(h_a))
-    sdexpr = {}  # node component:   sum_n (q_n * h_n)
-    hqvar = {}   # tank component:   q_r * h_r
-    for t in horizon:
-
-        # McCormick's envelope of hq_rt = h_rt * q_rt = h_rt * (h_{r,t+1}-h_rt)/c
-        for j, tank in inst.tanks.items():
-            c = inst.flowtoheight(tank)
-            (h0, h1) = (hvar[j, t], hvar[j, t + 1])
-            if t==0:
-            
-                (l0, l1, u0, u1) = (h0.lb, D[j, t+1][0], h0.ub, D[j, t+1][1])
-            elif t== inst.nperiods()-1:
-                (l0, l1, u0, u1) = (D[j, t][0], h1.lb, D[j, t][1], h1.ub)
-            else:
-                (l0, l1, u0, u1) = (D[j, t][0], D[j, t+1][0], D[j, t][1], D[j, t+1][1])
-            if l0 == u0:
-                hqvar[j, t] = (h1 - l0) * l0 / c
-            else:
-                hqvar[j, t] = milp.addVar(lb=-GRB.INFINITY, name=f'hqt({j},{t})')
-                inflow = {a: [inst.arcs[a].qmin, inst.arcs[a].qmax] for a in inst.inarcs(j)}
-                outflow = {a: [inst.arcs[a].qmin, inst.arcs[a].qmax] for a in inst.outarcs(j)}
-                print(f"inflow: {inflow}")
-                print(f"outflow: {outflow}")
-                lq = max(c * inst.inflowmin(j), c * Z[j, t][0], l1 - u0)
-                uq = min(c * inst.inflowmax(j), c * Z[j, t][1], u1 - l0)
-                # refining with a direction indicator variable
-                if withoutz:
-                    milp.addConstr(c * hqvar[j, t] >= l0 * (h1 - h0) + lq * (h0 - l0), name=f'hqlo({j},{t})')
-                    milp.addConstr(c * hqvar[j, t] >= u0 * (h1 - h0) + uq * (h0 - u0), name=f'hqup({j},{t})')
-                else:
-                    zvar = milp.addVar(vtype=GRB.BINARY, name=f'z({j},{t})')
-                    hzvar = milp.addVar(lb=0, ub=u0, name=f'hz({j},{t})')
-                    milp.addConstr(hzvar <= u0 * zvar, name=f'hz1up({j},{t})')
-                    milp.addConstr(hzvar >= l0 * zvar, name=f'hz1lo({j},{t})')
-                    milp.addConstr(hzvar <= h0 - l0 * (1 - zvar), name=f'hz0up({j},{t})')
-                    milp.addConstr(hzvar >= h0 - u0 * (1 - zvar), name=f'hz0lo({j},{t})')
-                    milp.addConstr(c * hqvar[j, t] >= l0 * (h1 - h0) + lq * (hzvar - l0 * zvar), name=f'hqlo({j},{t})')
-                    milp.addConstr(c * hqvar[j, t] >= u0 * (h1 - h0) + uq * (h0 - hzvar - u0 * (1 - zvar)), name=f'hqup({j},{t})')
-
-        # sdexpr[t] = milp.addVar(lb=-GRB.INFINITY, name=f'sd({t})')
-        sdexpr[t] = gp.quicksum(hqvar[j, t] for j in inst.tanks) \
-            + gp.quicksum(junc.demand(t) * hvar[j, t] for j, junc in inst.junctions.items()) \
-            + gp.quicksum(res.head(t) * qexpr[j, t] for j, res in inst.reservoirs.items())
-
-        # OA for the convex function g_a >= Phi_a(q_a) - Phi_a(phi^{-1}(h_a)) + h_a * phi^{-1}(h_a)
-        for (i,j), arc in inst.arcs.items():
-            a = (i, j)
-            gvar[a, t] = milp.addVar(lb=-GRB.INFINITY, name=f'g({i},{j},{t})')
-            noacut = 10 if a in inst.pumps else 5
-            for n in range(noacut):
-                qstar = (arc.qmin + Z[(i,j), t][1]) * n / (noacut - 1)
-                milp.addConstr(gvar[a, t] >= arc.hlossval(qstar) *
-                               (qvar[a, t] - qstar * svar[a, t]) + qstar * dhvar[a, t], name=f'goa{n}({i},{j},{t})')
-
-        milp.addConstr(gp.quicksum(gvar[a, t] for a in inst.arcs) + sdexpr[t] <= milp.Params.MIPGapAbs, name=f'sd({t})')
-
-
-def binarydependencies(inst, milp, ivar, svar, nperiods, horizon):
+def binarydependencies(inst, milp, ivar, svar, nperiods, TT):
     # PUMP SWITCHING
     sympumps = inst.symmetries
     uniquepumps = inst.pumps_without_sym()
-    print('symmetries:', uniquepumps)
+####    print('symmetries:', uniquepumps)
 
     def getv(vdict, pump, t):
         return gp.quicksum(vdict[a, t] for a in sympumps) if pump == 'sym' else vdict[pump, t]
 
     # !!! check the max ignition constraint for the symmetric group
     # !!! make ivar[a,0] = svar[a,0]
-    for a in uniquepumps:
-        rhs = 6 * len(sympumps) if a == 'sym' else 6 - svar[a, 0]
-        milp.addConstr(gp.quicksum(getv(ivar, a, t) for t in range(1, nperiods)) <= rhs, name='ig')
-        for t in range(1, nperiods):
-            milp.addConstr(getv(ivar, a, t) >= getv(svar, a, t) - getv(svar, a, t - 1), name=f'ig({t})')
-            if inst.tsduration == dt.timedelta(minutes=30) and t < inst.nperiods() - 1:
-                # minimum 1 hour activity
-                milp.addConstr(getv(svar, a, t + 1) + getv(svar, a, t - 1) >= getv(svar, a, t), name=f'ig1h({t})')
+
 
     # PUMP DEPENDENCIES
-    if sympumps:
-        for t in horizon:
-            for i, pump in enumerate(sympumps[:-1]):
-                milp.addConstr(ivar[pump, t] >= ivar[sympumps[i + 1], t], name=f'symi({t})')
-                milp.addConstr(svar[pump, t] >= svar[sympumps[i + 1], t], name=f'symx({t})')
+
 
     if inst.dependencies:
-        for t in horizon:
+        for t in TT:
             for s in inst.dependencies['p1 => p0']:
                 milp.addConstr(svar[s[0], t] >= svar[s[1], t], name=f'dep1({t})')
             for s in inst.dependencies['p0 xor p1']:
@@ -275,10 +215,10 @@ def binarydependencies(inst, milp, ivar, svar, nperiods, horizon):
             #    milp.addConstr(svar[s[0], t] + svar[s[1], t] <= 1, name=f'dep4({t})')
 
 
-def postbinarysolution(inst, arcvals, horizon, svar):
+def postbinarysolution(inst, arcvals, TT, svar):
     assert arcvals
     for a in inst.varcs:
-        for t in horizon:
+        for t in TT:
             v = arcvals.get((a, t))
             if v == 1:
                 svar[a, t].lb = 1
