@@ -433,10 +433,10 @@ def solve_BT(instance, Z, C, D, P0, P1, oagap, mipgap, drawsolution, stat, arcva
     print(instance.tostr_network())
 
     print("obbt: parse bounds")
-    try:
-        instance.parse_bounds()
-    except UnicodeDecodeError as err:
-        print(f'obbt bounds not read: {err}')
+#    try:
+#        instance.parse_bounds()
+#    except UnicodeDecodeError as err:
+#        print(f'obbt bounds not read: {err}')
     # instance.print_all()
 
     print("create model")
@@ -477,4 +477,4 @@ def solveinstance_BT(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolut
     f.write(f"{now}, {oagap}, {mipgap}, {stat.getsolvemode()}, {instid}, {stat.tocsv_basic()}\n")
     f.close()
     
-solveinstance_BT('RIC s 12 2', modes='', drawsolution=False)
+solveinstance_BT('RIC s 12 1', modes='', drawsolution=False)
