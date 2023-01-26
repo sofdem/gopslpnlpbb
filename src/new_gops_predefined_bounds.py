@@ -229,66 +229,26 @@ def bound_tight(instance, oagap, arcvals= None):
     
 
 
-    bt_tank_infl=[]
-    for K, k in instance.tanks.items():
-        for t in range(0, len(list(instance.horizon()))):
-            bt_tank_infl_min= float(sum(instance.arcs[a].qmin for a in instance.inarcs(K)) - sum(instance.arcs[a].qmax for a in instance.outarcs(K)))
-            bt_tank_infl_max= float(sum(instance.arcs[a].qmax for a in instance.inarcs(K)) - sum(instance.arcs[a].qmin for a in instance.outarcs(K)))
-            bt_tank_infl.append([K, t, bt_tank_infl_min, bt_tank_infl_max])
-            bt_tank_infl_arr=np.array(bt_tank_infl)
-        
-    a2 = np.array(list(map(int, bt_tank_infl_arr[:, 1])))
-    x2 = list(zip(bt_tank_infl_arr[:, 0], a2[:]))
-    bt_tank_infl_dic= dict([
-        (key, [float(bt_tank_infl_arr[i][2]), float(bt_tank_infl_arr[i][3])]) for key, i in
-        zip(x2, range(len(bt_tank_infl_arr)))])
+    if instance.name == 'Richmond':
+        length=len(instance.horizon())
+###    z_flow= np.load('..//data//Richmond//Bound0_flow_arcs_ric.npy',allow_pickle=True)
+###    zz=z_flow.tolist()
+###    c_head=np.load('..//data//Richmond//Bound0_head_arcs_ric.npy',allow_pickle=True)
+###    cc=c_head.tolist()
     
-    BT={}    
-    for K, k in instance.arcs.items():
-        for t in range(0, len(list(instance.horizon()))):
-            bt_arcs= dict([((K, t), [zz[K][0], zz[K][1]])])
-            BT= {**BT, **bt_arcs}
-    BT={**BT, **bt_tank_infl_dic}
-        
-        
-    pump_off_dic={}       
-    for K, k in instance.arcs.items():
-        if k.control:
-            for t in range(0, len(list(instance.horizon()))):
-                bt_arcs= dict([((K, t), [cc[K][0], cc[K][1]])])
-                pump_off_dic= {**pump_off_dic, **bt_arcs}
-
-
-    tank_lev=[]
-    for K, k in instance.tanks.items():
-        for t in range(0, len(list(instance.horizon()))):
-            if t==0:
-                tank_lev_min= k.head(k.vinit)
-                tank_lev_max= k.head(k.vinit)
-            else:
-                tank_lev_min= k.head(k.vmin)
-                tank_lev_max= k.head(k.vmax)
-                tank_lev.append([K, t, tank_lev_min, tank_lev_max])
-                tank_lev_arr= np.array(tank_lev)
-    a3 = np.array(list(map(int, tank_lev_arr[:, 1])))
-    x3 = list(zip(tank_lev_arr[:, 0], a3[:]))
-    tank_lev_dic= dict([
-        (key, [float(tank_lev_arr[i][2]), float(tank_lev_arr[i][3])]) for key, i in
-        zip(x3, range(len(tank_lev_arr)))])
-
-
-
-
-    P0={}
-    P1={}
-
-
-
-    Z= BT
-    C= pump_off_dic
-    D= tank_lev_dic
     
-    for tau in range(0, 3):
+        z_flow= np.load(f'..//data//Richmond//C1_{length}//Bound_flow_arcs.npy',allow_pickle=True)
+        Z=z_flow.tolist()
+        c_head=np.load(f'..//data//Richmond//C1_{length}//Bound_flow_tanks.npy',allow_pickle=True)
+        C=c_head.tolist()
+        d_head=np.load(f'..//data//Richmond//C1_{length}//Bound_h_tanks.npy',allow_pickle=True)
+        D=d_head.tolist()
+        p1_h=np.load(f'..//data//Richmond//C1_{length}//Probed1.npy',allow_pickle=True)
+        P1=p1_h.tolist()
+        p0_h=np.load(f'..//data//Richmond//C1_{length}//probed0.npy',allow_pickle=True)
+        P0=p0_h.tolist()
+    
+    for tau in range(0, 0):
     
         Y=0
         N=0

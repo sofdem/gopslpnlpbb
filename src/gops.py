@@ -44,17 +44,13 @@ def makeinstance(instid: str):
 
 
 FASTBENCH = [
-    'FSD s 12 1',
+
     'FSD s 24 1',
     'FSD s 24 2',
     'FSD s 24 3',
     'FSD s 24 4',
     'FSD s 24 5',
-    'FSD s 48 1',
-    'RIC s 12 3',
-    'RIC s 12 4',
-    'RIC s 24 3',
-    'RIC s 48 3',
+
 ]
 
 OUTDIR = Path("../output/")
