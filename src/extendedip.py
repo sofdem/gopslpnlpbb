@@ -21,7 +21,8 @@ from gurobipy import GRB
 def build_model(inst, confgen):
     milp = gp.Model('exps')
 
-    yvar = [{ck: milp.addVar(vtype=GRB.BINARY, obj=inst.eleccost(t) * confgen.power(cv), name=f"y({t},{ck})".replace(' ', '')) for ck, cv in cols.items()}
+    yvar = [{ck: milp.addVar(vtype=GRB.BINARY, obj=inst.eleccost(t) * confgen.power(cv),
+                             name=f"y({t},{ck})".replace(' ', '')) for ck, cv in cols.items()}
             for t, cols in enumerate(confgen.columns)]  # configuration choice
 
     previouscols = confgen.columns[0]
@@ -49,7 +50,7 @@ def parse_solution(confgen, yvars):
         assert ck, "no active configuration found"
         inactive[t] = confgen.getinactiveset(ck)
         if t == 0:
-            profile[0] = confgen.volpreall(0, ck)
+            profile[0] = confgen.volpreall(ck)
         profile[t+1] = confgen.volpostall(t, ck)
     return inactive, profile
 

@@ -28,7 +28,7 @@ def myfloat(val: str) -> float:
 def update_min(oldlb: float, newlb: float) -> float:
     """Update lower bound only if better: returns max(oldlb, newlb)."""
     if newlb <= oldlb:
-        print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
+        # print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
         return oldlb
     return newlb
 
@@ -36,7 +36,7 @@ def update_min(oldlb: float, newlb: float) -> float:
 def update_max(oldub: float, newub: float) -> float:
     """Update upper bound only if better: returns min(oldub, newub)."""
     if newub >= oldub:
-        print(f'do not update max {oldub:.3f} to {newub:.3f}')
+        # print(f'do not update max {oldub:.3f} to {newub:.3f}')
         return oldub
     return newub
 
@@ -73,6 +73,15 @@ class _Tank(_Node):
 
     def volume(self, head):
         return (head - self.altitude()) * self.surface
+
+    def checkcapacity(self, vol: float, vminisvinit: bool, tol: float):
+        hgap = (vol - (self.vinit if vminisvinit else self.vmin)) / self.surface
+        if hgap < -tol:
+            return hgap
+        hgap = (vol - self.vmax) / self.surface
+        if hgap > tol:
+            return hgap
+        return 0
 
 
 class _Junction(_Node):
@@ -153,6 +162,15 @@ class _Arc:
         self.qmin = update_min(self.qmin, qmin)
         self.qmax = update_max(self.qmax, qmax)
 
+    def check_qbounds(self, q: float, tol: float):
+        gap = q - self.qmin
+        if gap < -tol:
+            return gap
+        gap = q - self.qmax
+        if gap > tol:
+            return gap
+        return 0
+
     def hlossval(self, q):
         """Value of the quadratic head loss function at q."""
         return self.hloss[0] + self.hloss[1] * q + self.hloss[2] * q * abs(q)
@@ -203,10 +221,10 @@ class _ControllableArc(_Arc):
         self.control = True
 
     def abs_qmin(self) -> float:
-        return min(0, self.qmin)
+        return min(0.0, self.qmin)
 
     def abs_qmax(self) -> float:
-        return max(0, self.qmax)
+        return max(0.0, self.qmax)
 
     def update_dhbounds(self, dhmin, dhmax):
         self.dhmin = update_min(self.dhmin, dhmin)
@@ -222,7 +240,7 @@ class _ValvedPipe(_ControllableArc):
     valve type     : 'GV' or 'PRV' or 'CV'
     """
     def __init__(self, id_, nodes, type_, dhmin, dhmax, qmin, qmax):
-        _ControllableArc.__init__(self, id_, nodes, qmin, qmax, None, dhmin, dhmax)
+        _ControllableArc.__init__(self, id_, nodes, qmin, qmax, [], dhmin, dhmax)
         self.type = type_
         if type_ != 'GV':
             raise NotImplementedError('pressure reducing valves are not yet supported')
@@ -233,14 +251,14 @@ class _ValvedPipe(_ControllableArc):
         return f'V{self.id} {self.type} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}]'
 
     def merge_pipe(self, pipe):
-        print(f'merge valve {self.nodes} + pipe {pipe.nodes}')
+        # print(f'merge valve {self.nodes} + pipe {pipe.nodes}')
         self.pipe = pipe.nodes
         assert self.nodes[0] == pipe.nodes[1], f'valve {self.nodes} + pipe {pipe.nodes}'
         auxnode = self.nodes[0]
         self.nodes = (pipe.nodes[0], self.nodes[1])
         self.hloss = pipe.hloss
-        print(f'valve bounds = [{self.qmin}, {self.qmax}]')
-        print(f'pipe bounds = [{pipe.qmin}, {pipe.qmax}]')
+        # print(f'valve bounds = [{self.qmin}, {self.qmax}]')
+        # print(f'pipe bounds = [{pipe.qmin}, {pipe.qmax}]')
         self.update_qbounds(pipe.qmin, pipe.qmax)
         return auxnode
 
@@ -269,6 +287,13 @@ class _Pump(_ControllableArc):
     def __str__(self):
         return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}] ' \
                f'{self.power} {self.type} '
+
+
+def isjunction(node):
+    return isinstance(node, _Junction)
+
+def isreservoir(node):
+    return isinstance(node, _Reservoir)
 
 
 class Instance:
@@ -326,12 +351,16 @@ class Instance:
         return self.incidence[node, 'out']
 
     def inflowmin(self, node):
-        return (sum(self.arcs[a].abs_qmin for a in self.inarcs(node))
+        return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
                 - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
 
     def inflowmax(self, node):
         return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
-                - sum(self.arcs[a].abs_qmin for a in self.outarcs(node)))
+                - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
+
+    def inflow(self, node, flow):
+        return self.flowtovolume() * (sum(flow[a] for a in self.inarcs(node))
+                                      - sum(flow[a] for a in self.outarcs(node)))
 
     def flowtoheight(self, tank):
         return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)
@@ -470,7 +499,7 @@ class Instance:
             i = inpipe[0][0]
             pipe = self.fpipes.pop((i, iv))
             auxnode = valve.merge_pipe(pipe)
-            print(f'valved pipe {(i, j)} = {valve.pipe} + {valve.valve}')
+            # print(f'valved pipe {(i, j)} = {valve.pipe} + {valve.valve}')
             assert self.junctions[auxnode].dmean == 0
             self.junctions.pop(auxnode)
             vpipes[(i, j)] = valve
@@ -562,3 +591,17 @@ class Instance:
         """ Returns the cost of a solution. """
         return sum(self.eleccost(t) * (pump.power[0] * plan[t][k] + pump.power[1] * flows[t][k])
                    for k, pump in self.pumps.items() for t in self.horizon())
+
+    def getvolumeprofiles(self, dhprofiles):
+        """ convert height deltas in volumes: from 'dhprofiles[ntanks][nperiods]' to 'vprofiles[nperiods+1][ntanks]' """
+        if (dhprofiles is None) or (len(dhprofiles) != len(self.tanks)):
+            return None
+        assert not {j: len(prof) for j, prof in dhprofiles.items() if len(prof) != self.nperiods()}
+        vprofiles = {0: {j: tank.vinit for j, tank in self.tanks.items()}}
+        hlevel = {j: tank.head(tank.vinit) for j, tank in self.tanks.items()}
+        for t in range(1, self.nperiods() + 1):
+            for j, dhj in dhprofiles.items():
+                hlevel[j] += dhj[t - 1]
+            vprofiles[t] = {j: tank.volume(hlevel[j]) for j, tank in self.tanks.items()}
+        return vprofiles
+

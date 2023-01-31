@@ -7,192 +7,210 @@ Created on Thu Jan 27 15:03:46 2022
 
 Create columns for the extended IP.
 Ranges of volumes for the tanks are discretized in N steps giving a discrete set of volume configurations.
-Columns are given as tuples (t, S, V, V', E):
+Columns are given as tuples (time t, command S, init volumes V, final volumes V', energy E):
 For each time t, each command S and each volume configuration V, we run the network flow analysis
-to compute flow/head satisfying demand at time t  (Q, H) s.t. Q_A=Q_A.S_A, Q_J = D_Jt, H_R = V_R/s_R, H_A = F_A(Q_A)
-we derive the volume configuration at t+1: V'_J ~ V_J + Dt*Q_J and the pumping energy  E=E0_K.S_K + E1_K.Q_K.
+to compute the unique stationary flow/head equilibrium satisfying demand at time t, i.e. (Q, H) s.t.
+Q_A=Q_A.S_A, Q_J = D_Jt, H_R = V_R/s_R, H_A = F_A(Q_A), then derive
+the volume configuration at t+1: V'_J ~ V_J + Dt*Q_J and the pumping energy  E=E0_K.S_K + E1_K.Q_K.
 Columns are filtered either before computation: according to pump/valve or demand symmetries, fixed volumes at t=0
-or after computation: if flow is unfeasible flow or a tank capacity is violated.
-Commands S and volume configurations V are represented as integers in base 2 and base N respectively,
- or as their base10 integer counterpart.
+or after computation: if equilibrium is not feasible flow or a tank capacity is violated.
+Commands S and configurations V are represented either by their id (their generation number)
+or by their id given as an integer in base 2 or N respectively
 """
-from instance import Instance, _Tank
+
+from instance import Instance
 
 
 class ConfigGen:
     """ Column generator.
     Attributes:
-        instance: (pump scheduling problem instance
+        instance: pump scheduling problem instance
         feastol: feasibility tolerance for flow
-        binmatch: the ordered list of controllable arcs for the base 2 representation of S
-        binlen: length of a command S in base 2
-        commands: commands[S] = 0 if S in range(2^binlen) is unfeasible/redundant, or =  set of inactive arcs in S
+        binmatch: the list of controllable arcs ordered as in command ids
+        binlen: the number of controllable arcs => max 2^bin commands
+        commands[2^binlen]: commands[S] = 0 is unfeasible/redundant, or =  set of inactive arcs in S
         safety: safety margin (absolute value) in volumes to decide if a column is feasible or not
         nvsteps: nb of steps for the discretization of the ranges of volumes of the tanks
-        steplen: steplen[j] = length of a step for tank j
-        network: network flow analysis instance
-        columns: the generated set of columns: columns[t][S,V]=[V',E]
+        vstep[time][tank]: length of a step for a given tank at a given time
+        vmin[time][tank]: min volume of a given tank at a given time
+        vmax[time][tank]: max volume of a given tank at a given time
+        network: network flow analysis instance to compute the equilibria (either NetworkAnalysis or HydraulicNetwork)
+        columns[time][command,volume]: the generated set of columns columns[t][S,V]=[V',E]
     """
 
-    def __init__(self, instance: Instance, network, feastol: float, nvsteps: int, safety: float):
+    # @todo uniformize feastol (in volume or in flow)
+    def __init__(self, instance: Instance, network, feastol: float, nvsteps: int, safety: float,
+                 meanvolprofiles: list = None, margin: float = 0.2):
+        """ create a column generator:
+        when 'menavolprofiles' is specified, only plans satisfying these profiles with a given 'margin' are accepted.
+        """
         self.instance = instance
         self.feastol = feastol
         self.binmatch = list(self.instance.varcs.keys())
         self.binlen = len(self.binmatch)
         self.commands = self.filter_symmetry()
-        self.safety = safety
         self.nvsteps = nvsteps
-        self.steplen = {j: (tank.vmax - tank.vmin) / self.nvsteps for j, tank in
-                        self.instance.tanks.items()}  # lengths of discretized volume step for tanks
-        print(f"volumes discretization {self.nvsteps} step lengths: {self.steplen} "
-              f"initconf: {self.getvolconf({j: tank.vinit for j, tank in self.instance.tanks.items()})} "
-              f"safety: {self.safety}")
+        self.safety = safety
+        self.vmin, self.vmax, self.vstep = self.makevprofile(meanvolprofiles, margin)
+        print(f"volumes discretization {self.nvsteps} steps, safety: {self.safety}")
         self.network = network
         self.columns = self.generate_all_columns()
 
-    # accessors for columns
+    # @todo integrate the satefy margin to the vmin/vmax profiles
+    def makevprofile(self, meanvolprofiles: list = None, margin: float = 0.2):
+        """ returns the tank volume profiles: accepted bounds (min/max) and discretization step lengths;
+        either absolute (if 'meanvolprofiles' is null) or around 'meanvolprofiles' within the given 'margin' delta """
+        nperiods = self.instance.nperiods()
+        vinit = {j: tank.vinit for j, tank in self.instance.tanks.items()}
+        vmind = {0: vinit}
+        vmaxd = {0: vinit}
+        if not meanvolprofiles:
+            vmin = {j: tank.vmin for j, tank in self.instance.tanks.items()}
+            vmax = {j: tank.vmax for j, tank in self.instance.tanks.items()}
+            for t in range(1, nperiods):
+                vmind[t] = vmin
+                vmaxd[t] = vmax
+            vmind[nperiods] = vinit
+            vmaxd[nperiods] = vmax
+        else:
+            assert len(meanvolprofiles) == nperiods+1 and len(meanvolprofiles[0]) == len(self.instance.tanks)
+            for t in range(1, nperiods+1):
+                outofbounds = {j for j, tank in self.instance.tanks.items()
+                               if meanvolprofiles[t][j] < tank.vmin - 1e-6
+                               or meanvolprofiles[t][j] > tank.vmax + 1e-6}
+                assert not outofbounds, f"{outofbounds}"
+                vmind[t] = {j: max(tank.vmin, meanvolprofiles[t][j]*(1-margin))
+                            for j, tank in self.instance.tanks.items()}
+                vmaxd[t] = {j: min(tank.vmax, meanvolprofiles[t][j]*(1+margin))
+                            for j, tank in self.instance.tanks.items()}
+            vmind[nperiods] = {j: max(tank.vinit, meanvolprofiles[nperiods][j]*(1-margin))
+                               for j, tank in self.instance.tanks.items()}
+            outofbounds = {(j, meanvolprofiles[nperiods][j]) for j, tank in self.instance.tanks.items()
+                           if meanvolprofiles[nperiods][j] < tank.vinit - 1e-6}
+            assert not outofbounds, f"outofbounds: {outofbounds}"
+        vstepd = {t: {j: (vmaxd[t][j] - vmind[t][j])/self.nvsteps for j in self.instance.tanks}
+                  for t in range(nperiods+1)}
+        return vmind, vmaxd, vstepd
+
     def nbcols(self):
         """ returns the total number of columns. """
         return sum(len(cols) for cols in self.columns)
 
     @staticmethod
     def command(colkey: tuple) -> int:
-        """ Returns the command S (base10 int) for column with colkey=(S,V). """
+        """ returns the command number S for column with colkey=(S,V). """
         return colkey[0]
 
     def getinactiveset(self, colkey: tuple) -> set:
-        """ Returns the set of inactive arcs in command S for column with colkey=(S,V)."""
+        """ returns the set of inactive arcs in command S for column with colkey=(S,V)."""
         return self.commands[self.command(colkey)]
 
     @staticmethod
     def power(colval: tuple) -> float:
-        """ Returns the pump energy consumption E for column with colval=(V',E)."""
+        """ returns the pump energy consumption E for column with colval=(V',E)."""
         return colval[1]
 
     def volpre(self, colkey: tuple, tknum: int) -> int:
-        """ Returns V[tknum] the volume step number of the tknum-th tank in column with colkey=(S,V)."""
+        """ returns V[tknum] the volume step number of the tknum-th tank in column with colkey=(S,V)."""
         return self.volstep(colkey[1], tknum)
 
     def volpost(self, colval: tuple, tknum: int) -> int:
-        """ Returns V'[tknum] the volume step number of the tknum-th tank in column with colval=(V',E)."""
+        """ returns V'[tknum] the volume step number of the tknum-th tank in column with colval=(V',E)."""
         return self.volstep(colval[0], tknum)
 
-    def volpreall(self, period: int, colkey: tuple) -> list:
-        """ Returns V the list of volume step numbers for all tanks in column with colkey=(S,V)."""
+    def volpreall(self, colkey: tuple) -> list:
+        """ returns V the list of volume step numbers for all tanks in column with colkey=(S,V)."""
         return [self.volpre(colkey, tknum) for tknum in range(len(self.instance.tanks))]
 
     def volpostall(self, period: int, colkey: tuple) -> list:
-        """ Returns V' the list of volume step numbers for all tanks in column with colval=(V',E)."""
+        """ returns V' the list of volume step numbers for all tanks in column with colval=(V',E)."""
         return [self.volpost(self.columns[period][colkey], tknum) for tknum in range(len(self.instance.tanks))]
 
     # volumes configurations
     def volstep(self, volconf: int, tknum: int) -> int:
-        """ Returns the step number of the tknum-th tank in the volume configuration volconf. """
-        assert 0 <= volconf < pow(self.nvsteps,
-                                  len(self.instance.tanks)), f"0 <= {volconf} <= {self.nvsteps}^{len(self.instance.tanks)}"
+        """ returns the step number of the tknum-th tank in the volume configuration volconf. """
+        assert 0 <= volconf < pow(self.nvsteps, len(self.instance.tanks)), \
+            f"0 <= {volconf} <= {self.nvsteps}^{len(self.instance.tanks)}"
         vol = (volconf // pow(self.nvsteps, tknum)) % self.nvsteps
         return vol
 
-    def volmaxstep(self, tkid: str, step: int) -> int:
-        """ Returns the maximum volume value at step for tank tkid. """
-        return self.instance.tanks[tkid].vmin + (step + 1) * self.steplen[tkid]
+    # def volmidstep(self, tkid: str, step: int) -> int:
+    #    """ Returns the median volume value at step for tank tkid. """
+    #    return self.instance.tanks[tkid].vmin + (step + 1 / 2) * self.steplen[tkid]
 
-    def volmidstep(self, tkid: str, step: int) -> int:
-        """ Returns the median volume value at step for tank tkid. """
-        return self.instance.tanks[tkid].vmin + (step + 1 / 2) * self.steplen[tkid]
-
-    def firstmidvolume(self) -> dict:
+    def firstmidvolume(self, period: int) -> dict:
         """ Returns the minimum configuration of volumes as a dict of volumes. """
-        return {j: tank.vmin + self.steplen[j] / 2 for j, tank in self.instance.tanks.items()}
+        return {j: self.vmin[period][j] + self.vstep[period][j] / 2 for j, tank in self.instance.tanks.items()}
 
-    def nextmidvolume(self, intvol: int, volumes: dict):
-        """ Updates volumes with the next configuration represented as base10 (intvol+1). """
+    def nextmidvolume(self, intvol: int, volumes: dict, period: int):
+        """ Updates volumes with the next configuration id (intvol+1). """
         intvol += 1
         for j, tank in self.instance.tanks.items():
             if intvol % self.nvsteps:
-                volumes[j] += self.steplen[j]
+                volumes[j] += self.vstep[period][j]
                 return
-            volumes[j] = tank.vmin + self.steplen[j]
+            volumes[j] = self.vmin[period][j] + self.vstep[period][j]
             intvol //= self.nvsteps
 
-    def getvolconf(self, volumes: dict, withsafety=False) -> int:
-        """ Returns the base10 configuration figuring volumes or -1 if out of range. """
-        assert len(volumes) == len(self.instance.tanks)
+    def getnextvolconf(self, prevol: dict, flow: dict, period: int, withsafety=False) -> int:
+        """ Returns the configuration id figuring next volumes prevol+inflow or -1 if infeasible or out of range. """
+        assert len(prevol) == len(self.instance.tanks)
+        if not flow:
+            return -1
+        assert len(flow) == len(self.instance.arcs)
         volconf = 0
         factor = 1
-        for j, tank in self.instance.tanks.items():
-            step = self.getstep(j, tank, volumes[j], withsafety)
+        for j in self.instance.tanks:
+            step = self.getstep(j, period, prevol[j] + self.instance.inflow(j, flow), withsafety)
             if step == -1:
                 return -1
             volconf += step * factor
             factor *= self.nvsteps
         return volconf
 
-    def getstep(self, tkid: str, tank: _Tank, volume: float, withsafety: bool) -> int:
+    def getstep(self, tkid: str, period: int, volume: float, withsafety: bool) -> int:
         """ Returns the step number corresponding to the volume value of tank tkid or -1 if out of range. """
         safety = self.safety if withsafety else 0
-        if volume < tank.vmin - self.feastol + safety or volume > tank.vmax + self.feastol - safety:
+        if volume < self.vmin[period][tkid] - self.feastol + safety \
+                or volume > self.vmax[period][tkid] + self.feastol - safety:
             return -1
-        maxvolstep = tank.vmin + self.steplen[tkid]
+        maxvolstep = self.vmin[period][tkid] + self.vstep[period][tkid]
         for k in range(self.nvsteps - 1):
             if volume < maxvolstep:
                 return k
-            maxvolstep += self.steplen[tkid]
-        assert volume >= tank.vmax - self.steplen[tkid] - self.feastol
+            maxvolstep += self.vstep[period][tkid]
+        assert volume >= self.vmax[period][tkid] - self.vstep[period][tkid] - self.feastol
         return self.nvsteps - 1
 
+    # @todo compute only for volume configurations reachable from the previous period
     def generate_columns(self, command: int, inactive: set, period: int, columns: dict):
         """ Computes columns for fixed (period, command/inactive set) for all possible volume configurations. """
-#        if period == 1:
-#            sys.exit()
         if period == 0:
             nbcols = 1
-            volumes = {j: tank.vinit for j, tank in self.instance.tanks.items()}
-            intvolpre = self.getvolconf(volumes, withsafety=True)
-            assert intvolpre >= 0
+            volumes = self.vmin[0].copy()
         else:
-            intvolpre = 0
-            nbcols = pow(self.nvsteps, len(self.steplen))
-            volumes = self.firstmidvolume()
+            nbcols = pow(self.nvsteps, len(self.instance.tanks))
+            volumes = self.firstmidvolume(period)
 
-        postvol = {j: 0 for j in self.instance.tanks}
+        intvolpre = 0
         for c in range(nbcols):
-            # print(f"col {period}: {inactive} vol={volumes['T1']}")
-            flow = self.generate_column(inactive, period, volumes, postvol)
-            # print(f"flow = {flow}")
-            intvolpost = self.getvolconf(postvol, withsafety=True) if flow else -1
+            flow = self.network.flow_analysis(inactive, period, volumes, stopatviolation=True)
+            intvolpost = self.getnextvolconf(volumes, flow, period+1, withsafety=True)
             if intvolpost >= 0:
                 power = sum(pump.power[0] + pump.power[1] * flow[a]
                             for a, pump in self.instance.pumps.items() if flow[a] > self.feastol)
                 columns[command, intvolpre] = [intvolpost, power]
-            # print(f"ok ! T1={postvol['T1']} power = {power}" if intvolpost >= 0 else f"nop ! T1={postvol['T1']}" )
-            self.nextmidvolume(intvolpre, volumes)
+            self.nextmidvolume(intvolpre, volumes, period+1)
             intvolpre += 1
 
-    def generate_column(self, inactive: set, period: int, volumes: dict, postvol: dict):
-        """ Computes columns for fixed (period, command/inactive set) for all possible volume configurations. """
-        flow = self.network.flow_analysis(inactive, period, volumes, stopatviolation=True)
-        if not flow:
-            return 0
-        for j, tank in self.instance.tanks.items():
-            postvol[j] = volumes[j] + self.instance.flowtovolume() * \
-                         (sum(flow[a] for a in self.instance.inarcs(j))
-                          - sum(flow[a] for a in self.instance.outarcs(j)))
-            if postvol[j] < tank.vinit - self.feastol + self.safety and period == self.instance.nperiods() - 1:
-                # print(f"tank {j} {volumes[j]}: {tank.vinit} < {postvol[j]} < {tank.vmax}")
-                return 0
-        return flow
+    def inttobin(self, command_id: int) -> str:
+        """ Returns the base2 string of length 'binlen' corresponding to the base10 command id.  """
+        return f"{command_id:b}".zfill(self.binlen)
 
-    # commands: pump/valve configurations
-
-    def inttobin(self, command: int) -> str:
-        """ Returns the base2 string of length 'binlen' corresponding to the base10 command.  """
-        return f"{command:b}".zfill(self.binlen)
-
-    def inactiveset(self, command: int) -> set:
-        """ Returns the set of inactive arcs in configuration 'command' (base10). """
+    def inactiveset(self, command_id: int) -> set:
+        """ Returns the set of inactive arcs corresponding to the base10 command id. """
         inactive = set()
-        bincommand = self.inttobin(command)
+        bincommand = self.inttobin(command_id)
         for i, c in enumerate(bincommand):
             if c == '0':
                 # if isinstance(self.binmatch[i], int):
@@ -218,11 +236,11 @@ class ConfigGen:
                 if not found:
                     timesymmetry[t] = prof
             if not found:
-                for command, inactiveset in enumerate(self.commands):
-                    if inactiveset or command == pow(2, self.binlen) - 1:
-                        self.generate_columns(command, self.inactiveset(command), t, columns[t])
+                for command, inactiveset in self.commands.items():
+                    self.generate_columns(command, self.inactiveset(command), t, columns[t])
                 print(f"step {t}: generate {len(columns[t])} columns")
                 assert len(columns[t]), f"no feasible configuration at period {t}"
+        print(columns[-1].keys())
         return columns
 
     def filter_identity(self):
@@ -238,14 +256,12 @@ class ConfigGen:
     def filter_symmetry(self):
         """ remove redundant commands given pump/valves symmetries"""
         sym = self.instance.symmetries
-        if sym:
-            assert len(sym) > 1
-            symidx = [idx for idx, k in enumerate(self.binmatch) if k in sym]
-            assert len(symidx) == len(sym)
+        symidx = [idx for idx, k in enumerate(self.binmatch) if k in sym] if sym else []
+        assert len(symidx) == len(sym)
 
-        configs = [0 for _ in range(pow(2, self.binlen))]
-        nbconfigs = 0
-        for intconfig in range(len(configs)):
+        configs = {}
+        maxconfig = pow(2, self.binlen)
+        for intconfig in range(maxconfig):
             accept = True
             if sym:
                 binconfig = self.inttobin(intconfig)
@@ -257,11 +273,10 @@ class ConfigGen:
                 inactives = self.inactiveset(intconfig)
                 if self.filter_dependencies(inactives):
                     configs[intconfig] = inactives
-                    nbconfigs += 1
-        print(f"nb configurations before/after filtering= {pow(2, self.binlen)} -> {nbconfigs}")
+        print(f"nb configurations before/after filtering= {pow(2, self.binlen)} -> {len(configs)}")
         return configs
 
-    def filter_dependencies(self, inactiveset):
+    def filter_dependencies(self, inactiveset: set) -> bool:
         """ remove unfeasible command given pump/valves dependencies"""
         dep = self.instance.dependencies
         if not dep:

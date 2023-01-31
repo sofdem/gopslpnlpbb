@@ -13,12 +13,15 @@ It is also possible to keep an history of the computations.
 
 @author: Sophie Demassey
 """
+from typing import Tuple
 
 import numpy as np
 
 
 class PotentialNetwork:
     """a weakly connected potential network with controllable arcs and two types of nodes: demand or reservoir."""
+
+    CONVERGENCE_TOLERANCE = 1e-8
 
     def __init__(self, nd0nodes: int, nvarcs: int, hloss: list, history: bool, a: list, d: list, h: list):
         """Create Potential network."""
@@ -29,12 +32,12 @@ class PotentialNetwork:
         hnodes = {nid: len(d) + idx for idx, nid in enumerate(h)}
         self.nodes = {**dnodes, **hnodes}
         assert len(d) + len(h) == len(self.nodes)
-        print(f"nodes = {self.nodes}")
+        # print(f"nodes = {self.nodes}")
 
         assert len(hloss) == len(a)
         self.arcs = {aid: idx for idx, aid in enumerate(a)}
         self._arcs = [(self.nodes[aid[0]], self.nodes[aid[1]]) for aid in a]
-        print(f"arcs = {self.arcs}")
+        # print(f"arcs = {self.arcs}")
         self._hloss = np.array(hloss)
 
         incidence_transpose = PotentialNetwork._build_incidence_transpose(len(self.nodes), self._arcs)
@@ -48,7 +51,7 @@ class PotentialNetwork:
         self.history = {} if history else None
         self.hasvarcs = nvarcs > 0
 
-    def removehistory(self):
+    def erasehistory(self):
         self.history = None
 
     @staticmethod
@@ -106,13 +109,13 @@ class PotentialNetwork:
             self._mask_d[nidx] = False
             self._mask_a[aidx] = False
             nmasked += 1
-            arc = self._arcs[aidx]
+            arc: Tuple[int, int] = self._arcs[aidx]
             adjn = arc[1] if arc[0] == nidx else arc[0]
             if adjn < self.nd0nodes and self._mask_d[adjn]:
                 tocheck.add(adjn)
         return self._mask_d0leaf(tocheck, nmasked)
 
-    def flow_analysis(self, inactivearcs: tuple, fixeddemand: list, fixedhead: list, feastol: float):
+    def flow_analysis(self, inactivearcs: tuple, fixeddemand: list, fixedhead: list, cvgtol=CONVERGENCE_TOLERANCE):
         configid, flow = self.check_history(inactivearcs, fixeddemand, fixedhead)
         if flow:
             # print(f"skip calculation for {configid}: flow = {flow}")
@@ -143,7 +146,7 @@ class PotentialNetwork:
         q0 = fd if dix is None else fd[dix]
         h0 = np.array(fixedhead)
 
-        q = self.todini_pilati(hloss, q0[:, np.newaxis], h0[:, np.newaxis], a12, a10, feastol)
+        q = self.todini_pilati(hloss, q0[:, np.newaxis], h0[:, np.newaxis], a12, a10, cvgtol)
         assert q.shape == (hloss.shape[0], 1), f"{q.shape} != ({hloss.shape[0]}, 1)"
         if aix is None:
             return {aid: q[aidx, 0] for aid, aidx in self.arcs.items()}
@@ -162,7 +165,7 @@ class PotentialNetwork:
         return flow
 
     @staticmethod
-    def todini_pilati(hloss, q0, h0, a12, a10, feastol):
+    def todini_pilati(hloss, q0, h0, a12, a10, cvgtol):
         """Apply the Todini Pilati algorithm of flow analysis, return flow and head."""
         narcs = hloss.shape[0]
         ndnodes = q0.shape[0]
@@ -174,25 +177,26 @@ class PotentialNetwork:
         a21 = a12.transpose()
         ident = np.identity(narcs)
         q = np.full((narcs, 1), 10)
+        h = None
 
         gap = 1
-        while gap > feastol:
+        while gap > cvgtol:
             qold = np.copy(q)
             a11 = np.diag([hloss[i, 2] * abs(q[i, 0]) + hloss[i, 1] + hloss[i, 0] / q[i, 0] for i in range(narcs)])
             d = np.diag([(2 * hloss[i, 2] * abs(q[i, 0]) + hloss[i, 1]) ** (-1) for i in range(narcs)])
             h = - np.linalg.inv(a21 @ d @ a12) @ (a21 @ d @ (a11 @ q + a10 @ h0) + q0 - a21 @ q)
             q = (ident - d @ a11) @ q - d @ (a12 @ h + a10 @ h0)
             gap = np.absolute(q - qold).sum() / np.absolute(q).sum()
-        assert PotentialNetwork.check_hloss(q, h, h0, hloss, a10, a12, feastol)
+        assert h and PotentialNetwork.check_hloss(q, h, h0, hloss, a10, a12, cvgtol)
         return q
 
     @staticmethod
-    def check_hloss(q, h, h0, hloss, a10, a12, feastol):
+    def check_hloss(q, h, h0, hloss, a10, a12, cvgtol):
         narcs = hloss.shape[0]
         a11 = np.diag([hloss[i, 2] * abs(q[i, 0]) + hloss[i, 1] + hloss[i, 0] / q[i, 0] for i in range(narcs)])
         hlh = a12 @ h + a10 @ h0
         hlq = a11 @ q
-        hlossdiff = np.absolute(hlh + hlq) > feastol
+        hlossdiff = np.absolute(hlh + hlq) > cvgtol
         if hlossdiff.any():
             print(f"hloss diff: {hlh[hlossdiff]} != {hlq[hlossdiff]}")
             return False

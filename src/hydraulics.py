@@ -107,12 +107,12 @@ class HydraulicNetwork:
         nhead = 0
         for nodeid in incidence:
             node = self.instance.nodes[nodeid]
-            if isinstance(node, inst._Junction):
+            if inst.isjunction(node):
                 demand.append(node.demand(period))
                 nodeindex[nodeid] = (True, ndemand)
                 ndemand += 1
             else:
-                nodehead = node.head(period if isinstance(node, inst._Reservoir) else volumes[nodeid])
+                nodehead = node.head(period if inst.isreservoir(node) else volumes[nodeid])
                 head.append(nodehead)
                 nodeindex[nodeid] = (False, nhead)
                 nhead += 1
@@ -197,7 +197,6 @@ class HydraulicNetwork:
         nperiods = len(inactive)
         volumes = {0: {i: tank.vinit for i, tank in self.instance.tanks.items()}}
         flow = {}
-        # head = {}
 
         for t in range(nperiods):
             flow[t], errormsg = self._flow_analysis(inactive[t], t, volumes[t], stopatviolation)
@@ -208,9 +207,7 @@ class HydraulicNetwork:
                 nbviolations += 1
             volumes[t+1] = {}
             for i, tank in self.instance.tanks.items():
-                volumes[t + 1][i] = volumes[t][i] + self.instance.flowtovolume() \
-                                    * (sum(flow[t][a] for a in self.instance.inarcs(i))
-                                       - sum(flow[t][a] for a in self.instance.outarcs(i)))
+                volumes[t + 1][i] = volumes[t][i] + self.instance.inflow(i, flow[t])
                 if volumes[t + 1][i] < tank.vmin - self.feastol:
                     print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
                     nbviolations += 1
@@ -223,14 +220,12 @@ class HydraulicNetwork:
                     if stopatviolation:
                         return flow, volumes, t+1
 
-        #head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
             if volumes[nperiods][i] < tank.vinit - self.feastol:
                 print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vinit:.2f}')
                 nbviolations += 1
                 if stopatviolation:
                     return flow, volumes, nperiods
-            # head[nperiods][i] = tank.head(volumes[nperiods][i])
 
         return flow, volumes, nbviolations
 
@@ -263,7 +258,6 @@ class HydraulicNetwork:
 
     @staticmethod
     def check_all_hloss(q, h, h0, arcs, a10, a12, feastol):
-        narcs = len(arcs)
         a11 = np.zeros((len(arcs), len(arcs)))
         for i, (a, arc) in enumerate(arcs.items()):
             a11[i][i] = arc[2] * abs(q[i][0]) + arc[1] + arc[0] / q[i][0]
@@ -274,5 +268,3 @@ class HydraulicNetwork:
             print(f"hloss diff: {hlh[hlossdiff]} != {hlq[hlossdiff]}")
             return False
         return True
-
-
