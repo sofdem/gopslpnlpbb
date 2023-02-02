@@ -477,4 +477,4 @@ def solveinstance_BT(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolut
     f.write(f"{now}, {oagap}, {mipgap}, {stat.getsolvemode()}, {instid}, {stat.tocsv_basic()}\n")
     f.close()
     
-solveinstance_BT('RIC s 12 1', modes='', drawsolution=False)
+solveinstance_BT('RIC s 12 4', modes='', drawsolution=False)
