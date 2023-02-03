@@ -7,8 +7,12 @@ Created on Fri Apr  3 11:07:46 2020
 """
 
 import csv
+import json
 import math
+from typing import Tuple, Dict, List
+import sys
 
+import numpy as np
 import pandas as pd
 import datetime as dt
 from pathlib import Path
@@ -28,7 +32,7 @@ def myfloat(val: str) -> float:
 def update_min(oldlb: float, newlb: float) -> float:
     """Update lower bound only if better: returns max(oldlb, newlb)."""
     if newlb <= oldlb:
-        print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
+        # print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
         return oldlb
     return newlb
 
@@ -36,7 +40,7 @@ def update_min(oldlb: float, newlb: float) -> float:
 def update_max(oldub: float, newub: float) -> float:
     """Update upper bound only if better: returns min(oldub, newub)."""
     if newub >= oldub:
-        print(f'do not update max {oldub:.3f} to {newub:.3f}')
+        # print(f'do not update max {oldub:.3f} to {newub:.3f}')
         return oldub
     return newub
 
@@ -67,12 +71,39 @@ class _Tank(_Node):
         self.vmax = vmax
         self.vinit = vinit
         self.surface = surface
+        self._hbounds = []
+        self._qinbounds = []
 
     def head(self, volume):
-        return self.altitude() + volume / self.surface
+        return myround(self.altitude() + volume / self.surface)
 
     def volume(self, head):
-        return (head - self.altitude()) * self.surface
+        return myround((head - self.altitude()) * self.surface)
+
+    def hmin(self, t: int) -> float:
+        return self._hbounds[t][0] if self._hbounds else self.head(self.vmin)
+
+    def hmax(self, t: int) -> float:
+        return self._hbounds[t][1] if self._hbounds else self.head(self.vmax)
+
+    def sethbounds(self, hbounds: list):
+        for ht in hbounds:
+            assert self.head(self.vmin) <= ht[0], f"{self.head(self.vmin)} > {ht[0]})"
+            assert self.head(self.vmax) >= ht[1], f"{self.head(self.vmax)} < {ht[1]})"
+        assert self.head(self.vinit) == hbounds[0][0]
+        assert self.head(self.vinit) == hbounds[0][1]
+        assert self.head(self.vinit) == hbounds[-1][0]
+        assert self.head(self.vmax) == hbounds[-1][1]
+        self._hbounds = hbounds
+
+    def qinmin(self, t: int) -> float:
+        return self._qinbounds[t][0]
+
+    def qinmax(self, t: int) -> float:
+        return self._qinbounds[t][1]
+
+    def setqinbounds(self, qinbounds: list):
+        self._qinbounds = qinbounds
 
 
 class _Junction(_Node):
@@ -128,30 +159,42 @@ class _Arc:
     """Generic network arc.
 
     id      : identifier
-    nodes   : '(i,j)' with i the start node id, and j the end node id
-    qmin    : minimum flow value <= q(i,j) (in L/s)
-    qmax    : maximum flow value >= q(i,j) (in L/s)
+    nodes   : (i,j) with i the start node id, and j the end node id
+    _qmin    : minimum flow value <= q(i,j) (in L/s) when active
+    _qmax    : maximum flow value >= q(i,j) (in L/s) when active
+    _qbounds : specific bounds on flow when active indexed on times (optional)
     hloss   : head loss polynomial function: h(i) - h(j) = sum_n hloss[n] q(i,j)^n (L/s -> m)
     control : is the arc controllable or not ? (valved pipe or pump)
     """
 
-    def __init__(self, id_, nodes, qmin, qmax, hloss):
+    def __init__(self, id_, nodes: Tuple[str, str], qmin: float, qmax: float, hloss: list):
         self.id = id_
         self.nodes = nodes
-        self.qmin = qmin
-        self.qmax = qmax
+        self._qmin = qmin
+        self._qmax = qmax
+        self._qbounds = []
         self.hloss = hloss
         self.control = False
 
-    def abs_qmin(self):
-        return self.qmin
+    def qmin(self, t: int = -1) -> float:
+        """ return the best known minimum flow value when active, at time t if specified. """
+        return self._qmin if t < 0 or not self._qbounds else self._qbounds[t][0]
 
-    def abs_qmax(self):
-        return self.qmax
+    def qmax(self, t: int = -1) -> float:
+        """ return the best known maximum flow value when active, at time t if specified. """
+        return self._qmax if t < 0 or not self._qbounds else self._qbounds[t][1]
+
+    def setqbounds(self, qbounds: list, qminmax: Tuple[float, float]):
+        """ import specific time indexed active bounds when arc is active;
+        if specified, overwrite the original general bounds with qminmax. """
+        if qminmax:
+            self._qmin = qminmax[0]
+            self._qmax = qminmax[1]
+        self._qbounds = qbounds
 
     def update_qbounds(self, qmin, qmax):
-        self.qmin = update_min(self.qmin, qmin)
-        self.qmax = update_max(self.qmax, qmax)
+        self._qmin = update_min(self._qmin, qmin)
+        self._qmax = update_max(self._qmax, qmax)
 
     def hlossval(self, q):
         """Value of the quadratic head loss function at q."""
@@ -187,33 +230,62 @@ class _Arc:
         return False
 
     def __str__(self):
-        return f'{self.id} [{self.qmin}, {self.qmax}] {self.hloss}'
+        return f'{self.id} [{self._qmin}, {self._qmax}] {self.hloss}'
 
 
 class _ControllableArc(_Arc):
     """Controllable network arc: valved pipe or pump
-    dhmin   : minimum head loss value when arc is off (valve open or pump off)
-    dhmax   : maximum head loss value when arc is off (valve open or pump off)
+    _dhmin   : minimum head loss value when arc is off (valve open or pump off)
+    _dhmax   : maximum head loss value when arc is off (valve open or pump off)
+    _dhbounds : specific bounds on head loss indexed on times (optional)
+    _fixed[t] : know status (inactive: 0, active: 1, unknown: -1) at time t (optional)
     """
 
     def __init__(self, id_, nodes, qmin, qmax, hloss, dhmin, dhmax):
         _Arc.__init__(self, id_, nodes, qmin, qmax, hloss)
-        self.dhmin = dhmin
-        self.dhmax = dhmax
+        self._dhmin = dhmin
+        self._dhmax = dhmax
+        self._dhbounds = []
+        self._fixed = []
         self.control = True
 
-    def abs_qmin(self):
-        return min(0, self.qmin)
+    def dhmin(self, t: int = -1) -> float:
+        """ return the best known minimum head loss value, at time t if specified. """
+        return self._dhmin if t < 0 or not self._dhbounds else self._dhbounds[t][0]
 
-    def abs_qmax(self):
-        return max(0, self.qmax)
+    def dhmax(self, t: int = -1) -> float:
+        """ return the best known maximum head loss value, at time t if specified. """
+        return self._dhmax if t < 0 or not self._dhbounds else self._dhbounds[t][1]
 
-    def update_dhbounds(self, dhmin, dhmax):
-        self.dhmin = update_min(self.dhmin, dhmin)
-        self.dhmax = update_max(self.dhmax, dhmax)
+    def setdhbounds(self, dhbounds: list, dhminmax: Tuple[float, float]):
+        """ import specific time indexed head loss bounds;
+        if specified, overwrite the original general bounds with dhminmax. """
+        if dhminmax:
+            self._dhmin = dhminmax[0]
+            self._dhmax = dhminmax[1]
+        self._dhbounds = dhbounds
+
+    def setfixed(self, fixedtimes: list, nperiods: int):
+        """ import known fixed status: build the time-indexed table with 0 (inactive), 1 (active) or -1. """
+        assert len(fixedtimes) == 2
+        if fixedtimes[0] or fixedtimes[1]:
+            self._fixed = [-1 for _ in range(nperiods)]
+            for t in fixedtimes[0]:
+                self._fixed[t] = 0
+            for t in fixedtimes[1]:
+                assert self._fixed[t] < 0
+                self._fixed[t] = 1
+
+    def isfixedon(self, t: int) -> bool:
+        """ return True if arc is known to be active at time t. """
+        return self._fixed and self._fixed[t] == 1
+
+    def isfixedoff(self, t: int) -> bool:
+        """ return True if arc is known to be inactive at time t. """
+        return self._fixed and self._fixed[t] == 0
 
     def __str__(self):
-        return f'{self.id} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}]'
+        return f'{self.id} [{self._qmin}, {self._qmax}] {self.hloss} [{self._dhmin}, {self._dhmax}]'
 
 
 class _ValvedPipe(_ControllableArc):
@@ -222,7 +294,7 @@ class _ValvedPipe(_ControllableArc):
     valve type     : 'GV' or 'PRV' or 'CV'
     """
     def __init__(self, id_, nodes, type_, dhmin, dhmax, qmin, qmax):
-        _ControllableArc.__init__(self, id_, nodes, qmin, qmax, None, dhmin, dhmax)
+        _ControllableArc.__init__(self, id_, nodes, qmin, qmax, [], dhmin, dhmax)
         self.type = type_
         if type_ != 'GV':
             raise NotImplementedError('pressure reducing valves are not yet supported')
@@ -230,18 +302,20 @@ class _ValvedPipe(_ControllableArc):
         self.pipe = None
 
     def __str__(self):
-        return f'V{self.id} {self.type} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}]'
+        return f'V{self.id} {self.type} [{self._qmin}, {self._qmax}] {self.hloss} [{self._dhmin}, {self._dhmax}]'
 
     def merge_pipe(self, pipe):
-        print(f'merge valve {self.nodes} + pipe {pipe.nodes}')
+        # print(f'merge valve {self.nodes} + pipe {pipe.nodes}')
         self.pipe = pipe.nodes
         assert self.nodes[0] == pipe.nodes[1], f'valve {self.nodes} + pipe {pipe.nodes}'
         auxnode = self.nodes[0]
         self.nodes = (pipe.nodes[0], self.nodes[1])
         self.hloss = pipe.hloss
-        print(f'valve bounds = [{self.qmin}, {self.qmax}]')
-        print(f'pipe bounds = [{pipe.qmin}, {pipe.qmax}]')
-        self.update_qbounds(pipe.qmin, pipe.qmax)
+        # print(f'valve bounds = [{self._qmin}, {self._qmax}]')
+        # print(f'pipe bounds = [{pipe.qmin()}, {pipe.qmax()}]')
+        self._qmin = update_min(self._qmin, pipe.qmin())
+        self._qmax = update_max(self._qmax, pipe.qmax())
+
         return auxnode
 
 
@@ -267,7 +341,7 @@ class _Pump(_ControllableArc):
         return True
 
     def __str__(self):
-        return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}] ' \
+        return f'K{self.id} [{self._qmin}, {self._qmax}] {self.hloss} [{self._dhmin}, {self._dhmax}] ' \
                f'{self.power} {self.type} '
 
 
@@ -285,6 +359,7 @@ class Instance:
         self.pumps = self._parse_pumps('Pump.csv')
         self.fpipes = self._parse_pipes('Pipe.csv')
         self._valves = self._parse_valves('Valve_Set.csv')
+        # @todo merge pipes and valves directly in the instance files
         self.vpipes = self._merge_pipes_and_valves()
 
         self.farcs = self.fpipes
@@ -310,7 +385,7 @@ class Instance:
     def nperiods(self):
         return len(self.periods) - 1
 
-    def horizon(self):
+    def horizon(self) -> range:
         return range(self.nperiods())
 
     def tsinhours(self):
@@ -325,13 +400,13 @@ class Instance:
     def outarcs(self, node):
         return self.incidence[node, 'out']
 
-    def inflowmin(self, node):
-        return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
-                - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
+    #def inflowmin(self, node):
+    #    return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
+    #            - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
 
-    def inflowmax(self, node):
-        return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
-                - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
+    #def inflowmax(self, node):
+    #    return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
+    #            - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
 
     def flowtoheight(self, tank):
         return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)
@@ -557,3 +632,105 @@ class Instance:
         assert float(data[0][1]) == self.nperiods(), f"different horizons in {data[0]} and {self.tostr_basic()}"
         inactive = {t: set((A[0], A[1]) for A in data[1:] if A[t + 2] == '0') for t in self.horizon()}
         return inactive
+
+    def parse_bounds_obbt(self, overwrite: bool = True, obbtlevel: str = "C1"):
+        """Parse bounds in the json file.
+        if 'overwrite', then adjust all the original ones to these;
+        otherwise, adjust these bounds to the original ones."""
+        bndfile = open(Path(Instance.BNDSDIR, self.name, f"{obbtlevel}_{self.nperiods()}.json"), "r")
+        bounds: Dict[str, Dict[str, List[List[float]]]] = json.load(bndfile)
+        bndfile.close()
+
+        print(f"parse the new OBBT bound file: overwrite original bounds ? {overwrite}")
+        for a, arc in self.arcs.items():
+            aid = arc.id
+            assert len(bounds[aid]["q"]) == self.nperiods() and len(bounds[aid]["q"][-1]) == 2
+            qmin = min([b[0] for b in bounds[aid]["q"]])
+            qmax = max([b[1] for b in bounds[aid]["q"]])
+            print(f"{a}: [{arc.qmin()}, {arc.qmax()}] -> [{qmin}, {qmax}]")
+
+            if overwrite:
+                arc.setqbounds(bounds[aid]["q"], (qmin, qmax))
+            else:
+                if qmin < arc.qmin() or qmax > arc.qmax():
+                    for t in self.horizon():
+                        if bounds[aid]["q"][t][0] < arc.qmin() or bounds[aid]["q"][t][1] > arc.qmax():
+                            if not arc.control or t not in bounds[aid]["f"][0]:
+                                print(f"error (corrected) in qbounds for ({aid}, {t}): [{arc.qmin()}, {arc.qmax()}] -> "
+                                      f"[{bounds[aid]['q'][t][0]}, {bounds[aid]['q'][t][1]}]", file=sys.stderr)
+                                bounds[aid]['q'][t][0] = max(bounds[aid]['q'][t][0], arc.qmin())
+                                bounds[aid]['q'][t][1] = min(bounds[aid]['q'][t][1], arc.qmax())
+                arc.setqbounds(bounds[aid]["q"], None)
+
+            if arc.control:
+                arc.setfixed(bounds[aid]["f"], self.nperiods())
+
+                assert len(bounds[aid]["dh"]) == self.nperiods() and len(bounds[aid]["dh"][0]) == 2
+                dhmin = min([b[0] for b in bounds[aid]["dh"]])
+                dhmax = max([b[1] for b in bounds[aid]["dh"]])
+                print(f"{a}: [{arc.dhmin()}, {arc.dhmax()}] -> [{dhmin}, {dhmax}]")
+                if overwrite:
+                    arc.setdhbounds(bounds[aid]["dh"], (dhmin, dhmax))
+                else:
+                    if dhmin < arc.dhmin() or dhmax > arc.dhmax():
+                        for t in self.horizon():
+                            if bounds[aid]["dh"][t][0] < arc.dhmin() or bounds[aid]["dh"][t][1] > arc.dhmax():
+                                assert arc.isfixedon(t)
+                    arc.setdhbounds(bounds[aid]["dh"], None)
+
+        for j, tank in self.tanks.items():
+            tank.setqinbounds(bounds[j]["qin"])
+            assert len(bounds[j]["h"]) == self.nperiods() and len(bounds[j]["h"][0]) == 2
+            bounds[j]["h"].append([tank.head(tank.vinit), tank.head(tank.vmax)])
+            # print(f"H {j}: [{tank.vinit}, {tank.vmax}] [{tank.head(tank.vinit)}, {tank.head(tank.vmax)}]")
+            tank.sethbounds(bounds[j]["h"])
+
+    # @todo directly generate this json file
+    def format_bounds_obbt(self, obbtlevel: str = "C1"):
+        """Reformat Amir's OBBT bound files to one json file."""
+        print(f"{Instance.BNDSDIR}/{self.name}/{obbtlevel}_{self.nperiods()}")
+        rep = Path(Instance.BNDSDIR, self.name, f"{obbtlevel}_{self.nperiods()}")
+        bndfile = Path(Instance.BNDSDIR, self.name, f"{obbtlevel}_{self.nperiods()}.json")
+
+        zfile = "Bound_flow_arcs.npy"  # arc Q when X=1 + tank Qin
+        cfile = "Bound_flow_tanks.npy"  # tank H (sauf pour t = 0 => vinit ?)
+        dfile = "Bound_h_tanks.npy"  # varc DH when X=0
+        p1file = "Probed1.npy"  # varcs = 0
+        p0file = "Probed0.npy"  # varcs = 1
+
+        qbounds: Dict = np.load(Path(rep, zfile).as_posix(), allow_pickle=True).tolist()
+        hbounds: Dict = np.load(Path(rep, dfile).as_posix(), allow_pickle=True).tolist()
+        dhbounds: Dict = np.load(Path(rep, cfile).as_posix(), allow_pickle=True).tolist()
+        p1arcs: Dict = np.load(Path(rep, p1file).as_posix(), allow_pickle=True).tolist()
+        p0arcs: Dict = np.load(Path(rep, p0file).as_posix(), allow_pickle=True).tolist()
+        print(qbounds)
+
+        bounds = {}
+        for a, arc in self.arcs.items():
+            aid = arc.id
+            bounds[aid] = {"q": [[myround(qb) for qb in qbounds[(a, t)]] for t in self.horizon()]}
+            if arc.control:
+                bounds[aid]["dh"] = [[myround(dhb) for dhb in dhbounds[(a, t)]] for t in self.horizon()]
+                bounds[aid]["f"] = [[t for t in self.horizon() if p0arcs.get((a, t))],
+                                    [t for t in self.horizon() if p1arcs.get((a, t))]]
+                for t in bounds[aid]["f"][0]:
+                    bounds[aid]["q"][t][0] = 1e8
+                    bounds[aid]["q"][t][1] = -1e8
+                for t in bounds[aid]["f"][1]:
+                    bounds[aid]["dh"][t][0] = 1e8
+                    bounds[aid]["dh"][t][1] = -1e8
+
+        for j, tank in self.tanks.items():
+            bounds[j] = {"qin": [[myround(qb) for qb in qbounds[(j, t)]] for t in self.horizon()],
+                        "h": [[myround(hb) for hb in hbounds[(j, t)]] for t in self.horizon()]}
+
+        assert len(qbounds) == (len(self.arcs) + len(self.tanks)) * self.nperiods()
+        assert len(hbounds) == len(self.tanks) * self.nperiods()
+        assert len(dhbounds) == len(self.varcs) * self.nperiods()
+        assert len(p0arcs) == sum(len(bounds[arc.id]["f"][0]) for a, arc in self.varcs.items())
+        assert len(p1arcs) == sum(len(bounds[arc.id]["f"][1]) for a, arc in self.varcs.items())
+        print(f"{len(p0arcs)} variables fixed to 0, {len(p1arcs)} variables fixed to 1. ")
+        print(bounds)
+        bfile = open(bndfile, "w")
+        json.dump(bounds, bfile)
+        bfile.close()

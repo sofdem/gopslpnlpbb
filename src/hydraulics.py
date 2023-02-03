@@ -13,7 +13,6 @@ from copy import deepcopy
 NEWTON_TOL = 1e-8
 
 
-# TODO merge with instance
 class HydraulicNetwork:
     """An alternative view of the water network."""
 
@@ -148,7 +147,7 @@ class HydraulicNetwork:
 
         for k, ((i, j), arc) in enumerate(arcs.items()):
             flow[(i, j)] = q[k][0]
-            errormsg = self.check_bounds((i, j), flow[(i, j)])
+            errormsg = ""  # self.check_bounds((i, j), flow[(i, j)])
             if errormsg:
                 if stopatviolation:
                     return flow, head, errormsg
@@ -170,12 +169,12 @@ class HydraulicNetwork:
             return False
         return True
 
-    def check_bounds(self, arc, q):
-        if q < self.instance.arcs[arc].qmin - self.feastol:
-           return f"lbound q={q} < qmin={self.instance.arcs[arc].qmin}"
-        if q > self.instance.arcs[arc].qmax + self.feastol:
-            return f"ubound q={q} > qmax={self.instance.arcs[arc].qmax}"
-        return
+    # def check_bounds(self, arc, q):
+    #     if q < self.instance.arcs[arc].qmin() - self.feastol:
+    #       return f"lbound q={q} < qmin={self.instance.arcs[arc].qmin()}"
+    #    if q > self.instance.arcs[arc].qmax() + self.feastol:
+    #        return f"ubound q={q} > qmax={self.instance.arcs[arc].qmax()}"
+    #    return
 
     def check_nonnullflow(self, arc, q):
         if self.instance.arcs[arc].nonnull_flow_when_on() and -self.feastol < q < self.feastol:

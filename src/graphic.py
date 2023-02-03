@@ -24,7 +24,7 @@ def pumps_bar(instance, qnlp):
 
     x = instance.periods  # [:-1]
     bar_width = x[1] - x[0]
-    qmax = max(p.qmax for p in instance.pumps.values()) * 1.1
+    qmax = max(p.qmax() for p in instance.pumps.values()) * 1.1
 
     cm = plt.cm.get_cmap('OrRd')
     eleccost = [instance.eleccost(t) for t in instance.horizon()]
@@ -41,7 +41,7 @@ def pumps_bar(instance, qnlp):
         # axs[n].step(x, qnlpa, where='post', color=cm(0.8), label='real flow in $m^3/h$')
         axs[n].set_ylabel(f'({a[0]},{a[1]})', bbox=dict(fc='#557f2d', alpha=0.2, pad=3), fontsize=10)
         axs[n].set_ylim(0, qmax)
-        axs[n].fill_between(x, p.qmin, p.qmax, color='#7f6d5f', alpha=0.1)
+        axs[n].fill_between(x, p.qmin(), p.qmax(), color='#7f6d5f', alpha=0.1)
 
     # axs[-1].step(x, eleccost, where='post', color='#7f6d5f', label='elec in 'u"\u20AC"'/MWh')
     # axs[-1].set_ylim(min(0, min(eleccost)), max(eleccost) * 1.1)
@@ -74,7 +74,7 @@ def pumps_step(instance, qnlp):
     #    fig.suptitle(instance.name, fontsize=14)
 
     x = instance.periods
-    qmax = max(p.qmax for p in instance.pumps.values()) * 1.1
+    qmax = max(p.qmax() for p in instance.pumps.values()) * 1.1
 
     for n, (a, p) in enumerate(instance.pumps.items()):
         qnlpa = [qt[a] for t, qt in qnlp.items()]
@@ -82,7 +82,7 @@ def pumps_step(instance, qnlp):
         axs[n].step(x, qnlpa, where='post', color='#557f2d', label='real flow in $m^3/h$')
         axs[n].set_ylabel(f'({a[0]},{a[1]})', bbox=dict(fc='#557f2d', alpha=0.2, pad=3), fontsize=10)
         axs[n].set_ylim(0, qmax)
-        axs[n].fill_between(x, p.qmin, p.qmax, color='#557f2d', alpha=0.2)
+        axs[n].fill_between(x, p.qmin(), p.qmax(), color='#557f2d', alpha=0.2)
 
     eleccost = [instance.eleccost(t) for t in instance.horizon()]
     eleccost.append(eleccost[-1])

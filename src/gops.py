@@ -87,12 +87,10 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print(instance.tostr_basic())
     print(instance.tostr_network())
 
-    print("obbt: parse bounds")
     try:
-        instance.parse_bounds()
-    except UnicodeDecodeError as err:
-        print(f'obbt bounds not read: {err}')
-    # instance.print_all()
+        instance.parse_bounds_obbt(overwrite=True)
+    except FileNotFoundError:
+        print("No OBBT file found")
 
     print("create model")
     cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
@@ -176,11 +174,10 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
     print(instance.tostr_basic())
     print(instance.tostr_network())
 
-    print("obbt: parse bounds")
     try:
-        instance.parse_bounds()
-    except UnicodeDecodeError as err:
-        print(f'obbt bounds not read: {err}')
+        instance.parse_bounds_obbt(overwrite=True)
+    except FileNotFoundError:
+        print("No OBBT file found")
 
     stat = Stat(parsemode(modes))
     print("create model")
@@ -207,8 +204,8 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
 
 
 #solveinstance('FSD s 24 2', modes='', drawsolution=False)
-#solveinstance('RIC s 12 3', modes='')
-# testsolution('RIC s 12 1', "sol.csv")
+# solveinstance('RIC s 12 3', modes='')
+# testsolution('RIC s 12 1', Path(OUTDIR, "sol.csv"))
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
 solvebench(FASTBENCH[:7], modes=None)

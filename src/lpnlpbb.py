@@ -28,7 +28,7 @@ from pathlib import Path
 # Problem 2: even if Gurobi accepts the provided solution, it does not seem to directly update the cutoff value
 
 OUTDIR = Path("../output/")
-IISFILE = Path(OUTDIR, f'modeliis.ilp')
+IISFILE = Path(OUTDIR, f'modeliis.ilp').as_posix()
 
 
 def _attach_callback_data(model, instance, modes):
@@ -259,6 +259,11 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     if cvxmodel.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % cvxmodel.status)
 
+    if cvxmodel.status == GRB.INFEASIBLE:
+        print(f'no solution found write IIS file {IISFILE}')
+        cvxmodel.computeIIS()
+        cvxmodel.write(IISFILE)
+
     if cvxmodel._recordsol and cvxmodel.solcount == 0:
         return 0, {}
 
@@ -287,10 +292,6 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         if drawsolution:
             graphic.pumps(instance, flow)
             graphic.tanks(instance, flow, volume)
-    else:
-        print(f'no solution found write IIS file {IISFILE}')
-        cvxmodel.computeIIS()
-        cvxmodel.write(IISFILE)
 
     return cost, plan
 
@@ -303,6 +304,11 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
 
     if cvxmodel.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % cvxmodel.status)
+
+    if cvxmodel.status == GRB.INFEASIBLE:
+        print(f"f write IIS in {IISFILE}")
+        cvxmodel.computeIIS()
+        cvxmodel.write(IISFILE)
 
     costreal = 0
     plan = {}
@@ -320,10 +326,6 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
 
         for a, s in cvxmodel._svar.items():
             print(f'{a}: {round(s.x)} {round(cvxmodel._qvar[a].x, 4)}')
-    else:
-        print(f"f write IIS in {IISFILE}")
-        cvxmodel.computeIIS()
-        cvxmodel.write(IISFILE)
 
     return costreal, plan
 
