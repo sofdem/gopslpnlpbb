@@ -11,23 +11,46 @@ import json
 import math
 from typing import Tuple, Dict, List
 import sys
+import decimal
 
 import numpy as np
 import pandas as pd
 import datetime as dt
 from pathlib import Path
 
-TARIFF_COLNAME = 'elix'
-TRUNCATION = 8
+TARIFF_COLNAME: str = 'elix'
+TRUNCATION: int = 12
+FEASTOL: float = 10 ** (3-TRUNCATION)
 
 
-def myround(val: float) -> float:
-    return round(val, TRUNCATION)
+# @todo manage rounding values and bounds correctly and uniformly throughout the code
+def myround(value: float, decimals: int = TRUNCATION) -> float:
+    return round(value, decimals)
+#    with decimal.localcontext() as ctx:
+#        d = decimal.Decimal(value)
+#        ctx.rounding = decimal.ROUND_DOWN
+#        return float(round(d, decimals))
+
+
+def mylowerthan(v1: float, v2: float, feastol: float = FEASTOL) -> bool:
+    return v1 <= v2 + feastol
+
+
+def assertmylowerthan(v1: float, v2: float, feastol: float = FEASTOL):
+    assert mylowerthan(v1, v2, feastol), f"{v1} > {v2}"
+
+
+def myequalto(v1: float, v2: float, feastol: float = FEASTOL) -> bool:
+    return v1 <= v2 + feastol and v2 <= v1 + feastol
+
+
+def assertmyequalto(v1: float, v2: float, feastol: float = FEASTOL):
+    assert mylowerthan(v1, v2, feastol), f"{v1} != {v2}"
 
 
 def myfloat(val: str) -> float:
-    return myround(float(val))
-
+#    return myround(float(val))
+    return float(val)
 
 def update_min(oldlb: float, newlb: float) -> float:
     """Update lower bound only if better: returns max(oldlb, newlb)."""
@@ -77,9 +100,6 @@ class _Tank(_Node):
     def head(self, volume):
         return myround(self.altitude() + volume / self.surface)
 
-    def volume(self, head):
-        return myround((head - self.altitude()) * self.surface)
-
     def hmin(self, t: int) -> float:
         return self._hbounds[t][0] if self._hbounds else self.head(self.vmin)
 
@@ -88,22 +108,35 @@ class _Tank(_Node):
 
     def sethbounds(self, hbounds: list):
         for ht in hbounds:
-            assert self.head(self.vmin) <= ht[0], f"{self.head(self.vmin)} > {ht[0]})"
-            assert self.head(self.vmax) >= ht[1], f"{self.head(self.vmax)} < {ht[1]})"
-        assert self.head(self.vinit) == hbounds[0][0]
-        assert self.head(self.vinit) == hbounds[0][1]
-        assert self.head(self.vinit) == hbounds[-1][0]
-        assert self.head(self.vmax) == hbounds[-1][1]
-        self._hbounds = hbounds
+            assertmylowerthan(self.head(self.vmin), ht[0])
+            assertmylowerthan(ht[1], self.head(self.vmax))
+        assertmyequalto(self.head(self.vinit), hbounds[0][0])
+        assertmyequalto(self.head(self.vinit), hbounds[0][1])
+        assertmyequalto(self.head(self.vinit), hbounds[-1][0])
+        assertmyequalto(self.head(self.vmax), hbounds[-1][1])
+        self._hbounds = [(myround(ht[0] - FEASTOL/10),
+                          myround(ht[1] + FEASTOL/10)) for ht in hbounds]
 
     def qinmin(self, t: int) -> float:
-        return self._qinbounds[t][0]
+        return self._qinbounds[t][0] if self._qinbounds else -1e8
 
     def qinmax(self, t: int) -> float:
-        return self._qinbounds[t][1]
+        return self._qinbounds[t][1] if self._qinbounds else 1e8
 
     def setqinbounds(self, qinbounds: list):
-        self._qinbounds = qinbounds
+        self._qinbounds = [(myround(qt[0] - FEASTOL/10),
+                            myround(qt[1] + FEASTOL/10)) for qt in qinbounds]
+
+    def update_qinbounds(self, t: int, qmin: float, qmax: float):
+        qmin = myround(qmin - FEASTOL/10)
+        qmax = myround(qmax + FEASTOL/10)
+        if self._qinbounds:
+            if self.qinmin(t) < qmin or self.qinmax(t) > qmax:
+                print(f"update qinmin/max ({self.id}, {t}): {self.qinmin(t)} -> {qmin} "
+                      f"or {self.qinmax(t)} -> {qmax}")
+                self._qinbounds[t] = (max(self.qinmin(t), qmin), min(self.qinmax(t), qmax))
+        else:
+            self._qinbounds[t] = [qmin, qmax]
 
 
 class _Junction(_Node):
@@ -170,27 +203,28 @@ class _Arc:
     def __init__(self, id_, nodes: Tuple[str, str], qmin: float, qmax: float, hloss: list):
         self.id = id_
         self.nodes = nodes
-        self._qmin = qmin
-        self._qmax = qmax
+        self._qmin = myround(qmin - FEASTOL/10)
+        self._qmax = myround(qmax + FEASTOL/10)
         self._qbounds = []
         self.hloss = hloss
         self.control = False
 
     def qmin(self, t: int = -1) -> float:
-        """ return the best known minimum flow value when active, at time t if specified. """
+        """ return the minimum flow value, at time t if specified. """
         return self._qmin if t < 0 or not self._qbounds else self._qbounds[t][0]
 
     def qmax(self, t: int = -1) -> float:
-        """ return the best known maximum flow value when active, at time t if specified. """
+        """ return the maximum flow value, at time t if specified. """
         return self._qmax if t < 0 or not self._qbounds else self._qbounds[t][1]
 
     def setqbounds(self, qbounds: list, qminmax: Tuple[float, float]):
         """ import specific time indexed active bounds when arc is active;
         if specified, overwrite the original general bounds with qminmax. """
         if qminmax:
-            self._qmin = qminmax[0]
-            self._qmax = qminmax[1]
-        self._qbounds = qbounds
+            self._qmin = myround(qminmax[0] - FEASTOL)
+            self._qmax = myround(qminmax[1] + FEASTOL)
+        self._qbounds = [(myround(qt[0] - FEASTOL/10),
+                         myround(qt[1] + FEASTOL/10)) for qt in qbounds]
 
     def update_qbounds(self, qmin, qmax):
         self._qmin = update_min(self._qmin, qmin)
@@ -198,33 +232,33 @@ class _Arc:
 
     def hlossval(self, q):
         """Value of the quadratic head loss function at q."""
-        return self.hloss[0] + self.hloss[1] * q + self.hloss[2] * q * abs(q)
+        return myround(self.hloss[0] + self.hloss[1] * q + self.hloss[2] * q * abs(q))
 
     def hlossprimitiveval(self, q):
         """Value of the primitive of the quadratic head loss function at q."""
-        return self.hloss[0]*q + self.hloss[1] * q * q / 2 + self.hloss[2] * q * q * abs(q) / 3
+        return myround(self.hloss[0]*q + self.hloss[1] * q * q / 2 + self.hloss[2] * q * q * abs(q) / 3)
 
     def hlossinverseval(self, dh):
         """Value of the inverse of the quadratic head loss function at dh."""
         sgn = -1 if self.hloss[0] > dh else 1
-        return sgn * (math.sqrt(self.hloss[1]*self.hloss[1] + 4 * self.hloss[2] * (dh - self.hloss[0]))
-                      - self.hloss[1]) / (2 * self.hloss[2])
+        return myround(sgn * (math.sqrt(self.hloss[1]*self.hloss[1] + 4 * self.hloss[2] * (dh - self.hloss[0]))
+                      - self.hloss[1]) / (2 * self.hloss[2]))
 
     def gval(self, q, dh):
         """Value of the duality function g at (q,dh)."""
         q2 = self.hlossinverseval(dh)
-        return self.hlossprimitiveval(q) - self.hlossprimitiveval(q2) + dh*q2
+        return myround(self.hlossprimitiveval(q) - self.hlossprimitiveval(q2) + dh*q2)
 
     def hlosstan(self, q):
         """Tangent line of the head loss function at q: f(q) + f'(q)(x-q)."""
-        return [self.hloss[0] - self.hloss[2] * q * abs(q),
-                self.hloss[1] + 2 * self.hloss[2] * abs(q)]
+        return (myround(self.hloss[0] - self.hloss[2] * q * abs(q)),
+                myround(self.hloss[1] + 2 * self.hloss[2] * abs(q)))
 
     def hlosschord(self, q1, q2):
         """Line intersecting the head loss function at q1 and q2."""
         c0 = self.hlossval(q1)
         c1 = (c0 - self.hlossval(q2)) / (q1 - q2)
-        return [c0-c1*q1, c1]
+        return c0-c1*q1, c1
 
     def nonnull_flow_when_on(self):
         return False
@@ -243,11 +277,27 @@ class _ControllableArc(_Arc):
 
     def __init__(self, id_, nodes, qmin, qmax, hloss, dhmin, dhmax):
         _Arc.__init__(self, id_, nodes, qmin, qmax, hloss)
-        self._dhmin = dhmin
-        self._dhmax = dhmax
+        self._dhmin = myround(dhmin - FEASTOL/10)
+        self._dhmax = myround(dhmax + FEASTOL/10)
         self._dhbounds = []
         self._fixed = []
         self.control = True
+
+    def qminifon(self, t: int = -1) -> float:
+        """ return the best known minimum flow value when active, at time t if specified. """
+        return self._qmin if t < 0 or not self._qbounds else self._qbounds[t][0]
+
+    def qmaxifon(self, t: int = -1) -> float:
+        """ return the best known maximum flow value when active, at time t if specified. """
+        return self._qmax if t < 0 or not self._qbounds else self._qbounds[t][1]
+
+    def qmin(self, t: int = -1) -> float:
+        """ return the minimum flow value, at time t if specified. """
+        return self.qminifon(t) if self.isfixedon(t) else min(0.0, self.qminifon(t))
+
+    def qmax(self, t: int = -1) -> float:
+        """ return the  maximum flow value, at time t if specified. """
+        return self.qmaxifon(t) if self.isfixedon(t) else max(0.0, self.qmaxifon(t))
 
     def dhmin(self, t: int = -1) -> float:
         """ return the best known minimum head loss value, at time t if specified. """
@@ -261,9 +311,10 @@ class _ControllableArc(_Arc):
         """ import specific time indexed head loss bounds;
         if specified, overwrite the original general bounds with dhminmax. """
         if dhminmax:
-            self._dhmin = dhminmax[0]
-            self._dhmax = dhminmax[1]
-        self._dhbounds = dhbounds
+            self._dhmin = myround(dhminmax[0] - FEASTOL)
+            self._dhmax = myround(dhminmax[1] + FEASTOL)
+        self._dhbounds = [(myround(dht[0] - FEASTOL/10),
+                          myround(dht[1] + FEASTOL/10)) for dht in dhbounds]
 
     def setfixed(self, fixedtimes: list, nperiods: int):
         """ import known fixed status: build the time-indexed table with 0 (inactive), 1 (active) or -1. """
@@ -335,7 +386,7 @@ class _Pump(_ControllableArc):
 
     def powerval(self, q):
         assert len(self.power) == 2
-        return self.power[0] + self.power[1] * q if q else 0
+        return myround(self.power[0] + self.power[1] * q) if q else 0
 
     def nonnull_flow_when_on(self):
         return True
@@ -352,6 +403,7 @@ class Instance:
     BNDSDIR = Path("../bounds/")
 
     def __init__(self, name, profilename, starttime, endtime, aggregatesteps):
+        self.feastol = FEASTOL
         self.name = name
         self.tanks = self._parse_tanks('Reservoir.csv', self._parse_initvolumes('History_V_0.csv'))
         self.junctions = self._parse_junctions('Junction.csv')
@@ -382,6 +434,13 @@ class Instance:
         for j in self.junctions.values():
             j.setprofile(profiles)
 
+        try:
+            self.parse_bounds_obbt(overwrite=True)
+        except FileNotFoundError:
+            print("No OBBT file found")
+
+        self._update_bounds()
+
     def nperiods(self):
         return len(self.periods) - 1
 
@@ -399,14 +458,6 @@ class Instance:
 
     def outarcs(self, node):
         return self.incidence[node, 'out']
-
-    #def inflowmin(self, node):
-    #    return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
-    #            - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
-
-    #def inflowmax(self, node):
-    #    return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
-    #            - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
 
     def flowtoheight(self, tank):
         return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)
@@ -516,26 +567,6 @@ class Instance:
         for i in range(len(periods) - 1):
             assert duration == periods[i + 1] - periods[i]
         return duration
-
-    # !!! inverse the dh bounds for pumps in the hdf file
-    # !!! do not substract the error margin  when lb = 0 (for pumps especially !)
-    def parse_bounds(self, filename=None):
-        """Parse bounds in the hdf file."""
-        file = Path(Instance.BNDSDIR, filename if filename else self.name)
-        bounds = pd.read_hdf(file.with_suffix('.hdf'), encoding='latin1').to_dict()
-        margin = 1e-6
-        for i, b in bounds.items():
-            a = (i[0][0].replace('Tank ', 'T'), i[0][1].replace('Tank ', 'T'))
-            arc = self.arcs.get(a)
-            if not arc:
-                (a, arc) = [(na, narc) for na, narc in self.vpipes.items() if narc.valve == a or narc.pipe == a][0]
-            if i[1] == 'flow':
-                arc.update_qbounds(myround(b[0] - margin), myround(b[1] + margin))
-            elif i[1] == 'head':
-                if a in self.pumps:
-                    arc.update_dhbounds(myround(-b[0] - margin), myround(-b[1] + margin))
-                else:  # if a in self.valves:
-                    arc.update_dhbounds(myround(b[0] - margin), myround(b[1] + margin))
 
     def _merge_pipes_and_valves(self):
         vpipes = {}
@@ -684,6 +715,18 @@ class Instance:
             bounds[j]["h"].append([tank.head(tank.vinit), tank.head(tank.vmax)])
             # print(f"H {j}: [{tank.vinit}, {tank.vmax}] [{tank.head(tank.vinit)}, {tank.head(tank.vmax)}]")
             tank.sethbounds(bounds[j]["h"])
+
+    def _update_bounds(self):
+        for j, tank in self.tanks.items():
+            for t in self.horizon():
+                tank.update_qinbounds(t,
+                                      max(sum(self.arcs[a].qmin(t) for a in self.inarcs(j))
+                                          - sum(self.arcs[a].qmax(t) for a in self.outarcs(j)),
+                                          (tank.hmin(t+1) - tank.hmax(t)) / self.flowtoheight(tank)),
+                                      min(sum(self.arcs[a].qmax(t) for a in self.inarcs(j))
+                                          - sum(self.arcs[a].qmin(t) for a in self.outarcs(j)),
+                                          (tank.hmax(t+1) - tank.hmin(t)) / self.flowtoheight(tank)))
+
 
     # @todo directly generate this json file
     def format_bounds_obbt(self, obbtlevel: str = "C1"):

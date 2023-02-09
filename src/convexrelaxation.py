@@ -20,12 +20,13 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
 
     milp = gp.Model('Pumping_Scheduling')
 
-    qvar = {}  # arc flow
+    qvar = {}   # arc flow
     dhvar = {}  # arc hloss
-    svar = {}  # arc status
-    ivar = {}  # pump ignition status
-    hvar = {}  # node head
+    svar = {}   # arc status
+    ivar = {}   # pump ignition status
+    hvar = {}   # node head
     qexpr = {}  # node inflow
+    qjvar = {}  # tank inflow
 
     nperiods = inst.nperiods()
     horizon = inst.horizon()
@@ -56,11 +57,9 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
             elif a.control and not a.isfixedon(t):
                 svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'x({i},{j},{t})')
                 # q_a=0 if x_a=0 otherwise in [qmin,qmax]
-                lb = min(0, a.qmin(t))
-                ub = max(0, a.qmax(t))
-                qvar[(i, j), t] = milp.addVar(lb=lb, ub=ub, name=f'q({i},{j},{t})')
-                milp.addConstr(qvar[(i, j), t] <= a.qmax(t) * svar[(i, j), t], name=f'qxup({i},{j},{t})')
-                milp.addConstr(qvar[(i, j), t] >= a.qmin(t) * svar[(i, j), t], name=f'qxlo({i},{j},{t})')
+                qvar[(i, j), t] = milp.addVar(lb=a.qmin(t), ub=a.qmax(t), name=f'q({i},{j},{t})')
+                milp.addConstr(qvar[(i, j), t] <= a.qmaxifon(t) * svar[(i, j), t], name=f'qxup({i},{j},{t})')
+                milp.addConstr(qvar[(i, j), t] >= a.qminifon(t) * svar[(i, j), t], name=f'qxlo({i},{j},{t})')
                 # dh_a = (h_i - h_j) * x_a
                 lb = min(0, a.hlossval(a.qmin(t)))
                 ub = max(0, a.hlossval(a.qmax(t)))
@@ -87,25 +86,32 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
                           - gp.quicksum(qvar[a, t] for a in inst.outarcs(j))
 
         for j, junc in inst.junctions.items():
-            milp.addConstr(gp.quicksum(qvar[a, t] for a in inst.inarcs(j))
-                           - gp.quicksum(qvar[a, t] for a in inst.outarcs(j)) == junc.demand(t), name=f'fc({j},{t})')
+            milp.addConstr(qexpr[j, t] == junc.demand(t), name=f'fc({j},{t})')
 
         for j, tank in inst.tanks.items():
-            milp.addConstr(hvar[j, t+1] - hvar[j, t] == inst.flowtoheight(tank) * qexpr[j, t], name=f'fc({j},{t})')
+            qjvar[j, t] = milp.addVar(lb=tank.qinmin(t), ub=tank.qinmax(t), name=f'ht({j},{t})')
+
+            milp.addConstr(hvar[j, t+1] - hvar[j, t] == inst.flowtoheight(tank) * qexpr[j, t],
+                           name=f'fc({j},{t})')
 
     # MAX WITHDRAWAL AT RESERVOIRS
     for j, res in inst.reservoirs.items():
         if res.drawmax:
             milp.addConstr(res.drawmax >=
-                           inst.flowtovolume() * gp.quicksum(qexpr[j, t] for t in horizon), name=f'w({j})')
+                           inst.flowtovolume() * gp.quicksum(qexpr[j, t] for t in horizon),
+                           name=f'w({j})')
 
     # CONVEXIFICATION OF HEAD-FLOW
     for (i, j), arc in inst.arcs.items():
         for t in horizon:
             if not arc.control or not arc.isfixedoff(t):
-                if arc.qmin(t) != arc.qmax(t):
-                    assert arc.qmin(t) < arc.qmax(t), f"qmin>=qmax (({i},{j}), {t}) = {arc.qmin(t)} >= {arc.qmax(t)}"
-                    cutbelow, cutabove = oa.hlossoa(arc.qmin(t), arc.qmax(t), arc.hloss, (i, j), oagap, drawgraph=False)
+                qmin = arc.qminifon(t) if arc.control else arc.qmin(t)
+                qmax = arc.qmaxifon(t) if arc.control else arc.qmax(t)
+                assert qmin <= qmax + inst.feastol, \
+                    f"qmin>=qmax (({i},{j}), {t}) = {qmin} >= {qmax}"
+                if qmin < qmax - inst.feastol:
+                    cutbelow, cutabove = oa.hlossoa(qmin, qmax,
+                                                    arc.hloss, (i, j), oagap, drawgraph=False)
                     x = svar[(i, j), t] if arc.control else 1
                     for n, c in enumerate(cutbelow):
                         milp.addConstr(dhvar[(i, j), t] >= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpl{n}({i},{j},{t})')

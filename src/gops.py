@@ -87,11 +87,6 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print(instance.tostr_basic())
     print(instance.tostr_network())
 
-    try:
-        instance.parse_bounds_obbt(overwrite=True)
-    except FileNotFoundError:
-        print("No OBBT file found")
-
     print("create model")
     cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
     # cvxmodel.write('convrel.lp')
@@ -174,11 +169,6 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
     print(instance.tostr_basic())
     print(instance.tostr_network())
 
-    try:
-        instance.parse_bounds_obbt(overwrite=True)
-    except FileNotFoundError:
-        print("No OBBT file found")
-
     stat = Stat(parsemode(modes))
     print("create model")
     for i, d in enumerate(data):
@@ -204,8 +194,8 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
 
 
 #solveinstance('FSD s 24 2', modes='', drawsolution=False)
-# solveinstance('RIC s 12 3', modes='')
+solveinstance('RIC s 12 4', modes='CVX')
 # testsolution('RIC s 12 1', Path(OUTDIR, "sol.csv"))
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-solvebench(FASTBENCH[:7], modes=None)
+# solvebench(FASTBENCH[:7], modes=None)
