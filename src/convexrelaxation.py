@@ -64,10 +64,10 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
                 lb = min(0, a.hlossval(a.qmin(t)))
                 ub = max(0, a.hlossval(a.qmax(t)))
                 dhvar[(i, j), t] = milp.addVar(lb=lb, ub=ub, name=f'H({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] <= a.hlossval(a.qmax(t)) * svar[(i, j), t], name=f'dhxup({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] >= a.hlossval(a.qmin(t)) * svar[(i, j), t], name=f'dhxlo({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] <= hvar[i, t] - hvar[j, t] - a.dhmin(t) * (1-svar[(i, j), t]), name=f'dhhub({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] >= hvar[i, t] - hvar[j, t] - a.dhmax(t) * (1-svar[(i, j), t]), name=f'dhhlo({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] <= a.hlossval(a.qmaxifon(t)) * svar[(i, j), t], name=f'dhxup({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] >= a.hlossval(a.qminifon(t)) * svar[(i, j), t], name=f'dhxlo({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] <= hvar[i, t] - hvar[j, t] - a.dhminifoff(t) * (1-svar[(i, j), t]), name=f'dhhub({i},{j},{t})')
+                milp.addConstr(dhvar[(i, j), t] >= hvar[i, t] - hvar[j, t] - a.dhmaxifoff(t) * (1-svar[(i, j), t]), name=f'dhhlo({i},{j},{t})')
             else:
                 qvar[(i, j), t] = milp.addVar(lb=a.qmin(t), ub=a.qmax(t), name=f'q({i},{j},{t})')
                 dhvar[(i, j), t] = milp.addVar(lb=a.hlossval(a.qmin(t)), ub=a.hlossval(a.qmax(t)), name=f'H({i},{j},{t})')
@@ -90,9 +90,10 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
 
         for j, tank in inst.tanks.items():
             qjvar[j, t] = milp.addVar(lb=tank.qinmin(t), ub=tank.qinmax(t), name=f'ht({j},{t})')
+            milp.addConstr(qjvar[j, t] == qexpr[j, t], name=f'fcq({j},{t})')
 
-            milp.addConstr(hvar[j, t+1] - hvar[j, t] == inst.flowtoheight(tank) * qexpr[j, t],
-                           name=f'fc({j},{t})')
+            milp.addConstr(hvar[j, t+1] - hvar[j, t] == inst.flowtoheight(tank) * qjvar[j, t],
+                           name=f'fch({j},{t})')
 
     # MAX WITHDRAWAL AT RESERVOIRS
     for j, res in inst.reservoirs.items():

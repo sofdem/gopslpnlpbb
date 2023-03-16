@@ -299,11 +299,11 @@ class _ControllableArc(_Arc):
         """ return the  maximum flow value, at time t if specified. """
         return self.qmaxifon(t) if self.isfixedon(t) else max(0.0, self.qmaxifon(t))
 
-    def dhmin(self, t: int = -1) -> float:
+    def dhminifoff(self, t: int = -1) -> float:
         """ return the best known minimum head loss value, at time t if specified. """
         return self._dhmin if t < 0 or not self._dhbounds else self._dhbounds[t][0]
 
-    def dhmax(self, t: int = -1) -> float:
+    def dhmaxifoff(self, t: int = -1) -> float:
         """ return the best known maximum head loss value, at time t if specified. """
         return self._dhmax if t < 0 or not self._dhbounds else self._dhbounds[t][1]
 
@@ -699,13 +699,13 @@ class Instance:
                 assert len(bounds[aid]["dh"]) == self.nperiods() and len(bounds[aid]["dh"][0]) == 2
                 dhmin = min([b[0] for b in bounds[aid]["dh"]])
                 dhmax = max([b[1] for b in bounds[aid]["dh"]])
-                print(f"{a}: [{arc.dhmin()}, {arc.dhmax()}] -> [{dhmin}, {dhmax}]")
+                print(f"{a}: [{arc.dhminifoff()}, {arc.dhmaxifoff()}] -> [{dhmin}, {dhmax}]")
                 if overwrite:
                     arc.setdhbounds(bounds[aid]["dh"], (dhmin, dhmax))
                 else:
-                    if dhmin < arc.dhmin() or dhmax > arc.dhmax():
+                    if dhmin < arc.dhminifoff() or dhmax > arc.dhmaxifoff():
                         for t in self.horizon():
-                            if bounds[aid]["dh"][t][0] < arc.dhmin() or bounds[aid]["dh"][t][1] > arc.dhmax():
+                            if bounds[aid]["dh"][t][0] < arc.dhminifoff() or bounds[aid]["dh"][t][1] > arc.dhmaxifoff():
                                 assert arc.isfixedon(t)
                     arc.setdhbounds(bounds[aid]["dh"], None)
 

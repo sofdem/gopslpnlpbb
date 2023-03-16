@@ -194,7 +194,7 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
 
 
 #solveinstance('FSD s 24 2', modes='', drawsolution=False)
-solveinstance('RIC s 12 4', modes='CVX')
+solveinstance('RIC s 12 4') #, modes='CVX')
 # testsolution('RIC s 12 1', Path(OUTDIR, "sol.csv"))
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
