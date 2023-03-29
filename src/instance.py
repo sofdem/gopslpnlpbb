@@ -114,6 +114,14 @@ class _Tank(_Node):
     def setqinbounds(self, qinbounds: list):
         self._qinbounds = [(roundlb(qt[0]), roundub(qt[1])) for qt in qinbounds]
 
+    def checkcapacity(self, vol: float, vminisvinit: bool, tol: float):
+        hgap = (vol - (self.vinit if vminisvinit else self.vmin)) / self.surface
+        if hgap < -tol:
+            return hgap
+        hgap = (vol - self.vmax) / self.surface
+        if hgap > tol:
+            return hgap
+        return 0
 
 class _Junction(_Node):
     """Network node of type junction.
@@ -200,6 +208,15 @@ class _Arc:
             self._qmin = roundlb(qminmax[0])
             self._qmax = roundub(qminmax[1])
         self._qbounds = [(roundlb(qt[0]), roundub(qt[1])) for qt in qbounds]
+
+    def check_qbounds(self, q: float, tol: float):
+        gap = q - self.qmin()
+        if gap < -tol:
+            return gap
+        gap = q - self.qmax()
+        if gap > tol:
+            return gap
+        return 0
 
     def hlossval(self, q):
         """Value of the quadratic head loss function at q."""
@@ -366,6 +383,14 @@ class _Pump(_ControllableArc):
                f'{self.power} {self.type} '
 
 
+def isjunction(node):
+    return isinstance(node, _Junction)
+
+
+def isreservoir(node):
+    return isinstance(node, _Reservoir)
+
+
 class Instance:
     """Instance of the Pump Scheduling Problem."""
 
@@ -421,6 +446,18 @@ class Instance:
 
     def outarcs(self, node):
         return self.incidence[node, 'out']
+
+    # def inflowmin(self, node):
+    #    return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
+    #            - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
+
+    # def inflowmax(self, node):
+    #    return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
+    #            - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
+
+    def inflow(self, node, flow):
+        return self.flowtovolume() * (sum(flow[a] for a in self.inarcs(node))
+                                      - sum(flow[a] for a in self.outarcs(node)))
 
     def flowtoheight(self, tank):
         return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)

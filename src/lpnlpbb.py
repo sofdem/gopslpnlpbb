@@ -11,6 +11,8 @@ from gurobipy import GRB
 # import primalheuristic as ph
 import time
 from hydraulics import HydraulicNetwork
+from networkanalysis import NetworkAnalysis
+
 import graphic
 import csv
 from pathlib import Path
@@ -24,12 +26,15 @@ from pathlib import Path
 
 OUTDIR = Path("../output/")
 IISFILE = Path(OUTDIR, f'modeliis.ilp').as_posix()
+TESTNETANAL = True
 
 
 def _attach_callback_data(model, instance, modes):
     model._instance = instance
     model._nperiods = instance.nperiods()
-    model._network = HydraulicNetwork(instance, model.Params.FeasibilityTol)
+
+    model._network = NetworkAnalysis(instance, model.Params.FeasibilityTol) if TESTNETANAL \
+        else HydraulicNetwork(instance, feastol=model.Params.FeasibilityTol)
 
     model._incumbent = GRB.INFINITY
     model._rootlb = [0,0]
@@ -84,7 +89,7 @@ def mycallback(m, where):
         costrealsol = GRB.INFINITY
 
         inactive, activity = getplan(m)
-        qreal, hreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
+        qreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
 
         # plan X is not feasible for MINLP: cut with a combinatorial nogood |x-X|>=1
         if violperiod:
@@ -208,7 +213,7 @@ def mycallbackrecord(m, where):
         costrealsol = GRB.INFINITY
 
         inactive, activity = getplan(m)
-        qreal, hreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
+        qreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
 
         if violperiod:
             m._intnodes['unfeas'] += 1
@@ -352,7 +357,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
     if cvxmodel.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % cvxmodel.status)
 
-    if cvxmodel.status == GRB.INFEASIBLE:
+    if cvxmodel.status == GRB.INFEASIBLE and drawsolution:
         print(f'no solution found write IIS file {IISFILE}')
         cvxmodel.computeIIS()
         cvxmodel.write(IISFILE)
@@ -378,7 +383,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         if not flow:
             print('best solution found by the time-adjustment heuristic')
             inactive = {t: set(a for a, act in activity_t.items() if not act) for t, activity_t in plan.items()}
-            flow, hreal, volume, nbviolations = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
+            flow, volume, nbviolations = cvxmodel._network.extended_period_analysis(inactive, stopatviolation=False)
             assert nbviolations, 'solution was time-adjusted and should be slightly unfeasible'
             cost = solutioncost(cvxmodel, plan, flow)
             print(f'real plan cost = {cost} / time adjustment cost = {cvxmodel._incumbent}')
@@ -398,7 +403,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
     if cvxmodel.status != GRB.OPTIMAL:
         print('Optimization was stopped with status %d' % cvxmodel.status)
 
-    if cvxmodel.status == GRB.INFEASIBLE:
+    if cvxmodel.status == GRB.INFEASIBLE and drawsolution:
         print(f"f write IIS in {IISFILE}")
         cvxmodel.computeIIS()
         cvxmodel.write(IISFILE)

@@ -18,12 +18,14 @@ import lpnlpbb as bb
 import csv
 import graphic
 from hydraulics import HydraulicNetwork
+from networkanalysis import NetworkAnalysis
 from pathlib import Path
 from stats import Stat
 import os
 
 OA_GAP = 1e-2
 MIP_GAP = 1e-6
+TIME_LIMIT = 3600
 
 BENCH = {
     'FSD': {'ntk': 'Simple_Network', 'D0': 1, 'H0': '/01/2013 00:00'},
@@ -93,7 +95,7 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
     cvxmodel.write('convrel.lp')
     cvxmodel.params.MIPGap = mipgap
-    cvxmodel.params.timeLimit = 3600
+    cvxmodel.params.timeLimit = TIME_LIMIT
     # cvxmodel.params.OutputFlag = 0
     cvxmodel.params.Threads = 1
     # cvxmodel.params.FeasibilityTol = 1e-5
@@ -107,7 +109,8 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print(f"solution for {instance.tostr_basic()}")
     print(stat.tostr_basic())
     graphic.progress(cvxmodel._trace)
-    cvxmodel.printQuality()
+    if costreal:
+        cvxmodel.printQuality()
     cvxmodel.printStats()
     cvxmodel.terminate()
     return costreal, plan
@@ -152,8 +155,9 @@ def solvebench(bench, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=Fal
 def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
     instance = makeinstance(instid)
     inactive = instance.parsesolution(solfilename)
-    network = HydraulicNetwork(instance, feastol=mipgap)
-    flow, hreal, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
+    network = NetworkAnalysis(instance, mipgap) if TESTNETANAL \
+        else HydraulicNetwork(instance, feastol=mipgap)
+    flow, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
     cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
                                           for a, pump in instance.pumps.items() if a not in inactive[t])
                for t in instance.horizon())
@@ -206,7 +210,7 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
 
 #solveinstance('FSD s 24 2', modes='', drawsolution=False)
 solveinstance('RIC s 12 4', modes='C1icae', drawsolution=False)
-#testsolution('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1icae", drawsolution=False)
+# testsolution('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1icae", drawsolution=False)
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-# solvebench(FASTBENCH[:7], modes=None)
+# solvebench(FASTBENCH[7:], modes='C1', drawsolution=False)

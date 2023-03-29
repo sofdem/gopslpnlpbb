@@ -24,6 +24,9 @@ class HydraulicNetwork:
         self.removed_nodes = {}
         assert self._check_network(self.incidence)
 
+    def removehistory(self):
+        return
+
     @staticmethod
     def _build_incidence(instance):
         """Get the incidence matrix."""
@@ -54,6 +57,8 @@ class HydraulicNetwork:
         assert arc in incidence[j], f'arc {arc} not in incidence[{j}]= {incidence[j]}'
         incidence[j].remove(arc)
         if len(incidence[j]) == 0:
+            junction = self.instance.junctions.get(j, False)
+            assert junction is False or junction.dmean == 0, f"non-zero demand {j} node is disconnected"
             del incidence[j]
         elif len(incidence[j]) == 1:
             junction = self.instance.junctions.get(j)
@@ -102,12 +107,12 @@ class HydraulicNetwork:
         nhead = 0
         for nodeid in incidence:
             node = self.instance.nodes[nodeid]
-            if isinstance(node, inst._Junction):
+            if inst.isjunction(node):
                 demand.append(node.demand(period))
                 nodeindex[nodeid] = (True, ndemand)
                 ndemand += 1
             else:
-                nodehead = node.head(period if isinstance(node, inst._Reservoir) else volumes[nodeid])
+                nodehead = node.head(period if inst.isreservoir(node) else volumes[nodeid])
                 head.append(nodehead)
                 nodeindex[nodeid] = (False, nhead)
                 nhead += 1
@@ -133,6 +138,10 @@ class HydraulicNetwork:
                     a10[j][i] = val
         return nodeindex, q0, h0, a21, a12, a10
 
+    def flow_analysis(self, inactive: set, period: int, volumes: dict, stopatviolation):
+        flow, errormsg = self._flow_analysis(inactive, period, volumes, stopatviolation)
+        return 0 if errormsg else flow
+
     def _flow_analysis(self, inactive: set, period: int, volumes: dict, stopatviolation):
         violation = False
         arcs, incidence = self.active_network(inactive)
@@ -140,27 +149,27 @@ class HydraulicNetwork:
         q, h = self.todini_pilati(arcs, q0, h0, a21, a12, a10)
 
         flow = {a: 0 for a in self.instance.arcs}
-        head = {n: 0 for n in self.instance.nodes}
+        # head = {n: 0 for n in self.instance.nodes}
 
-        for node, (isDemand, i) in nodeindex.items():
-            head[node] = h[i][0] if isDemand else h0[i][0]
+        # for node, (isDemand, i) in nodeindex.items():
+        #    head[node] = h[i][0] if isDemand else h0[i][0]
 
         for k, ((i, j), arc) in enumerate(arcs.items()):
             flow[(i, j)] = q[k][0]
-            errormsg = ""  # self.check_bounds((i, j), flow[(i, j)])
+            errormsg = self.check_bounds((i, j), flow[(i, j)])
             if errormsg:
                 if stopatviolation:
-                    return flow, head, errormsg
+                    return flow, errormsg
                 violation = True
-            assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
-            assert self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
+            # assert self.check_hloss(arc, flow[(i, j)], head[i], head[j]), f'hloss a=({i},{j}) t={period}'
+            # assert self.check_nonnullflow((i, j), flow[(i, j)]),  f'nullflow a=({i},{j}) t={period}'
 
         # recover the head at removed nodes
-        for leaf, (branch, altj) in self.removed_nodes.items():
-            assert head[leaf] == 0 and flow[branch] == 0 and (branch not in self.instance.pumps)
-            head[leaf] = head[altj]
+        # for leaf, (branch, altj) in self.removed_nodes.items():
+        #    assert head[leaf] == 0 and flow[branch] == 0 and (branch not in self.instance.pumps)
+        #    head[leaf] = head[altj]
 
-        return flow, head, violation
+        return flow, violation
 
     def check_hloss(self, arc, q, hi, hj):
         hlossval = (arc[2]*abs(q) + arc[1])*q + arc[0]
@@ -169,12 +178,11 @@ class HydraulicNetwork:
             return False
         return True
 
-    # def check_bounds(self, arc, q):
-    #     if q < self.instance.arcs[arc].qmin() - self.feastol:
-    #       return f"lbound q={q} < qmin={self.instance.arcs[arc].qmin()}"
-    #    if q > self.instance.arcs[arc].qmax() + self.feastol:
-    #        return f"ubound q={q} > qmax={self.instance.arcs[arc].qmax()}"
-    #    return
+    def check_bounds(self, arc, q):
+        if q < self.instance.arcs[arc].qmin() - self.feastol:
+            return f"lbound q={q} < qmin={self.instance.arcs[arc].qmin()}"
+        if q > self.instance.arcs[arc].qmax() + self.feastol:
+            return f"ubound q={q} > qmax={self.instance.arcs[arc].qmax()}"
 
     def check_nonnullflow(self, arc, q):
         if self.instance.arcs[arc].nonnull_flow_when_on() and -self.feastol < q < self.feastol:
@@ -186,45 +194,39 @@ class HydraulicNetwork:
         """Run flow analysis progressively on each time period."""
         nbviolations = 0
         nperiods = len(inactive)
-        volumes = [{} for _ in range(nperiods + 1)]
-        volumes[0] = {i: tank.vinit for i, tank in self.instance.tanks.items()}
+        volumes = {0: {i: tank.vinit for i, tank in self.instance.tanks.items()}}
         flow = {}
-        head = {}
 
         for t in range(nperiods):
-            flow[t], head[t], errormsg = self._flow_analysis(inactive[t], t, volumes[t], stopatviolation)
+            flow[t], errormsg = self._flow_analysis(inactive[t], t, volumes[t], stopatviolation)
             if errormsg:
-                # print(f'violation at {t + 1}: {errormsg}')
+                print(f'violation at {t + 1}: {errormsg}')
                 if stopatviolation:
-                    return flow, head, volumes, t + 1
+                    return flow, volumes, t + 1
                 nbviolations += 1
-
+            volumes[t+1] = {}
             for i, tank in self.instance.tanks.items():
-                volumes[t + 1][i] = volumes[t][i] + self.instance.flowtovolume() \
-                                    * (sum(flow[t][a] for a in self.instance.inarcs(i))
-                                       - sum(flow[t][a] for a in self.instance.outarcs(i)))
+                volumes[t + 1][i] = volumes[t][i] + self.instance.inflow(i, flow[t])
                 if volumes[t + 1][i] < tank.vmin - self.feastol:
-                    # print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
+                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
                     nbviolations += 1
                     if stopatviolation:
-                        return flow, head, volumes, t+1
+                        return flow, volumes, t+1
 
                 elif volumes[t + 1][i] > tank.vmax + self.feastol:
-                    # print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}')
+                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}')
                     nbviolations += 1
                     if stopatviolation:
-                        return flow, head, volumes, t+1
+                        return flow, volumes, t+1
 
-        head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
             if volumes[nperiods][i] < tank.vinit - self.feastol:
                 # print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vmax:.2f}')
                 nbviolations += 1
                 if stopatviolation:
-                    return flow, head, volumes, nperiods
-            head[nperiods][i] = tank.head(volumes[nperiods][i])
+                    return flow, volumes, nperiods
 
-        return flow, head, volumes, nbviolations
+        return flow, volumes, nbviolations
 
     @staticmethod
     def todini_pilati(arcs, q0, h0, a21, a12, a10):
@@ -249,5 +251,18 @@ class HydraulicNetwork:
             # !!! assert q!=0 and q[pump]>0
             gap = sum(abs(q[i][0] - qold[i][0]) for i, arc in enumerate(arcs)) \
                 / sum(abs(q[i][0]) for i, arc in enumerate(arcs))
-
+        assert HydraulicNetwork.check_all_hloss(q, h, h0, arcs, a10, a12, NEWTON_TOL)
         return q, h
+
+    @staticmethod
+    def check_all_hloss(q, h, h0, arcs, a10, a12, feastol):
+        a11 = np.zeros((len(arcs), len(arcs)))
+        for i, (a, arc) in enumerate(arcs.items()):
+            a11[i][i] = arc[2] * abs(q[i][0]) + arc[1] + arc[0] / q[i][0]
+        hlh = a12 @ h + a10 @ h0
+        hlq = a11 @ q
+        hlossdiff = np.absolute(hlh + hlq) > feastol
+        if hlossdiff.any():
+            print(f"hloss diff: {hlh[hlossdiff]} != {hlq[hlossdiff]}")
+            return False
+        return True
