@@ -166,3 +166,17 @@ def tanks(instance, qnlp, volnlp):
 
     # plt.tight_layout()
     plt.show()
+
+
+def progress(trace):
+    if not trace:
+        return
+    labels = ['time', 'node', 'lb', 'ub', 'cvx', 'sol']
+    vals = {labels[k]: [tr[k] for tr in trace] for k in range(len(labels))}
+    fig, ax = plt.subplots()
+    ax.plot(vals['time'], vals['cvx'], '.')
+    ax.plot(vals['time'], vals['sol'], 'o')
+    ax.plot(vals['time'], vals['lb'], '-')
+    ax.plot(vals['time'], vals['ub'], '-')
+    fig.tight_layout()
+    plt.show()

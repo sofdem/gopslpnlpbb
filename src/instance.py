@@ -14,7 +14,6 @@ import sys
 import decimal
 
 import numpy as np
-import pandas as pd
 import datetime as dt
 from pathlib import Path
 
@@ -32,6 +31,16 @@ def myround(value: float, decimals: int = TRUNCATION) -> float:
 #        return float(round(d, decimals))
 
 
+def roundlb(value: float) -> float:
+    d: int = 10 ** TRUNCATION
+    return math.floor(value * d) / d
+
+
+def roundub(value: float) -> float:
+    d: int = 10 ** TRUNCATION
+    return math.ceil(value * d) / d
+
+
 def mylowerthan(v1: float, v2: float, feastol: float = FEASTOL) -> bool:
     return v1 <= v2 + feastol
 
@@ -41,31 +50,11 @@ def assertmylowerthan(v1: float, v2: float, feastol: float = FEASTOL):
 
 
 def myequalto(v1: float, v2: float, feastol: float = FEASTOL) -> bool:
-    return v1 <= v2 + feastol and v2 <= v1 + feastol
+    return mylowerthan(v1, v2, feastol) and mylowerthan(v2, v1, feastol)
 
 
 def assertmyequalto(v1: float, v2: float, feastol: float = FEASTOL):
-    assert mylowerthan(v1, v2, feastol), f"{v1} != {v2}"
-
-
-def myfloat(val: str) -> float:
-#    return myround(float(val))
-    return float(val)
-
-def update_min(oldlb: float, newlb: float) -> float:
-    """Update lower bound only if better: returns max(oldlb, newlb)."""
-    if newlb <= oldlb:
-        # print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
-        return oldlb
-    return newlb
-
-
-def update_max(oldub: float, newub: float) -> float:
-    """Update upper bound only if better: returns min(oldub, newub)."""
-    if newub >= oldub:
-        # print(f'do not update max {oldub:.3f} to {newub:.3f}')
-        return oldub
-    return newub
+    assert mylowerthan(v1, v2, feastol) and mylowerthan(v2, v1, feastol), f"{v1} != {v2}"
 
 
 class _Node:
@@ -114,8 +103,7 @@ class _Tank(_Node):
         assertmyequalto(self.head(self.vinit), hbounds[0][1])
         assertmyequalto(self.head(self.vinit), hbounds[-1][0])
         assertmyequalto(self.head(self.vmax), hbounds[-1][1])
-        self._hbounds = [(myround(ht[0] - FEASTOL/10),
-                          myround(ht[1] + FEASTOL/10)) for ht in hbounds]
+        self._hbounds = [(roundlb(ht[0]), roundub(ht[1])) for ht in hbounds]
 
     def qinmin(self, t: int) -> float:
         return self._qinbounds[t][0] if self._qinbounds else -1e8
@@ -124,19 +112,7 @@ class _Tank(_Node):
         return self._qinbounds[t][1] if self._qinbounds else 1e8
 
     def setqinbounds(self, qinbounds: list):
-        self._qinbounds = [(myround(qt[0] - FEASTOL/10),
-                            myround(qt[1] + FEASTOL/10)) for qt in qinbounds]
-
-    def update_qinbounds(self, t: int, qmin: float, qmax: float):
-        qmin = myround(qmin - FEASTOL/10)
-        qmax = myround(qmax + FEASTOL/10)
-        if self._qinbounds:
-            if self.qinmin(t) < qmin or self.qinmax(t) > qmax:
-                print(f"update qinmin/max ({self.id}, {t}): {self.qinmin(t)} -> {qmin} "
-                      f"or {self.qinmax(t)} -> {qmax}")
-                self._qinbounds[t] = (max(self.qinmin(t), qmin), min(self.qinmax(t), qmax))
-        else:
-            self._qinbounds[t] = [qmin, qmax]
+        self._qinbounds = [(roundlb(qt[0]), roundub(qt[1])) for qt in qinbounds]
 
 
 class _Junction(_Node):
@@ -203,8 +179,8 @@ class _Arc:
     def __init__(self, id_, nodes: Tuple[str, str], qmin: float, qmax: float, hloss: list):
         self.id = id_
         self.nodes = nodes
-        self._qmin = myround(qmin - FEASTOL/10)
-        self._qmax = myround(qmax + FEASTOL/10)
+        self._qmin = roundlb(qmin)
+        self._qmax = roundub(qmax)
         self._qbounds = []
         self.hloss = hloss
         self.control = False
@@ -221,14 +197,9 @@ class _Arc:
         """ import specific time indexed active bounds when arc is active;
         if specified, overwrite the original general bounds with qminmax. """
         if qminmax:
-            self._qmin = myround(qminmax[0] - FEASTOL)
-            self._qmax = myround(qminmax[1] + FEASTOL)
-        self._qbounds = [(myround(qt[0] - FEASTOL/10),
-                         myround(qt[1] + FEASTOL/10)) for qt in qbounds]
-
-    def update_qbounds(self, qmin, qmax):
-        self._qmin = update_min(self._qmin, qmin)
-        self._qmax = update_max(self._qmax, qmax)
+            self._qmin = roundlb(qminmax[0])
+            self._qmax = roundub(qminmax[1])
+        self._qbounds = [(roundlb(qt[0]), roundub(qt[1])) for qt in qbounds]
 
     def hlossval(self, q):
         """Value of the quadratic head loss function at q."""
@@ -277,8 +248,8 @@ class _ControllableArc(_Arc):
 
     def __init__(self, id_, nodes, qmin, qmax, hloss, dhmin, dhmax):
         _Arc.__init__(self, id_, nodes, qmin, qmax, hloss)
-        self._dhmin = myround(dhmin - FEASTOL/10)
-        self._dhmax = myround(dhmax + FEASTOL/10)
+        self._dhmin = roundlb(dhmin)
+        self._dhmax = roundub(dhmax)
         self._dhbounds = []
         self._fixed = []
         self.control = True
@@ -311,10 +282,9 @@ class _ControllableArc(_Arc):
         """ import specific time indexed head loss bounds;
         if specified, overwrite the original general bounds with dhminmax. """
         if dhminmax:
-            self._dhmin = myround(dhminmax[0] - FEASTOL)
-            self._dhmax = myround(dhminmax[1] + FEASTOL)
-        self._dhbounds = [(myround(dht[0] - FEASTOL/10),
-                          myround(dht[1] + FEASTOL/10)) for dht in dhbounds]
+            self._dhmin = roundlb(dhminmax[0])
+            self._dhmax = roundub(dhminmax[1])
+        self._dhbounds = [(roundlb(dht[0]), roundub(dht[1])) for dht in dhbounds]
 
     def setfixed(self, fixedtimes: list, nperiods: int):
         """ import known fixed status: build the time-indexed table with 0 (inactive), 1 (active) or -1. """
@@ -364,8 +334,8 @@ class _ValvedPipe(_ControllableArc):
         self.hloss = pipe.hloss
         # print(f'valve bounds = [{self._qmin}, {self._qmax}]')
         # print(f'pipe bounds = [{pipe.qmin()}, {pipe.qmax()}]')
-        self._qmin = update_min(self._qmin, pipe.qmin())
-        self._qmax = update_max(self._qmax, pipe.qmax())
+        self._qmin = max(self._qmin, pipe.qmin())
+        self._qmax = min(self._qmax, pipe.qmax())
 
         return auxnode
 
@@ -434,13 +404,6 @@ class Instance:
         for j in self.junctions.values():
             j.setprofile(profiles)
 
-        try:
-            self.parse_bounds_obbt(overwrite=True)
-        except FileNotFoundError:
-            print("No OBBT file found")
-
-        self._update_bounds()
-
     def nperiods(self):
         return len(self.periods) - 1
 
@@ -475,43 +438,38 @@ class Instance:
 
     def _parse_initvolumes(self, filename):
         data = self._parsecsv(filename)
-        return {A[0]: myfloat(A[1]) for A in data[1:]}
+        return {A[0]: float(A[1]) for A in data[1:]}
 
     def _parse_pumps(self, filename):
         data = self._parsecsv(filename)
         return dict({(A[1], A[2]): _Pump(A[0], (A[1], A[2]),
-                                         [-myfloat(A[c]) for c in [5, 4, 3]],
-                                         [myfloat(A[c]) for c in [7, 6]],
-                                         myfloat(A[8]), myfloat(A[9]),
-                                         -myfloat(A[10]), -myfloat(A[11]),
-                                         A[12]) for A in data[1:]})
+                                         [-float(A[c]) for c in [5, 4, 3]], [float(A[c]) for c in [7, 6]],
+                                         float(A[8]), float(A[9]), -float(A[10]), -float(A[11]), A[12])
+                     for A in data[1:]})
 
     def _parse_valves(self, filename):
         data = self._parsecsv(filename)
-        return dict({(A[1], A[2]): _ValvedPipe(A[0], (A[1], A[2]), A[3],
-                                               myfloat(A[4]), myfloat(A[5]),
-                                               myfloat(A[6]), myfloat(A[7])) for A in data[1:]})
+        return dict({(A[1], A[2]): _ValvedPipe(A[0], (A[1], A[2]), A[3], float(A[4]), float(A[5]),
+                                               float(A[6]), float(A[7])) for A in data[1:]})
 
     def _parse_pipes(self, filename):
         data = self._parsecsv(filename)
-        return dict({(A[1], A[2]): _Arc(A[0], (A[1], A[2]), myfloat(A[5]), myfloat(A[6]),
-                                        [0, myfloat(A[4]), myfloat(A[3])]) for A in data[1:]})
+        return dict({(A[1], A[2]): _Arc(A[0], (A[1], A[2]), float(A[5]), float(A[6]),
+                                        [0, float(A[4]), float(A[3])]) for A in data[1:]})
 
     def _parse_junctions(self, filename):
         data = self._parsecsv(filename)
-        return dict({A[0]: _Junction(A[0], myfloat(A[1]), myfloat(A[2]),
-                                     myfloat(A[3]), myfloat(A[4]), A[5]) for A in data[1:]})
+        return dict({A[0]: _Junction(A[0], float(A[1]), float(A[2]), float(A[3]), float(A[4]), A[5]) for A in data[1:]})
 
     def _parse_reservoirs(self, filename):
         data = self._parsecsv(filename)
-        return dict({A[0]: _Reservoir(A[0], myfloat(A[1]), myfloat(A[2]), myfloat(A[3]),
-                                      A[4], A[5], myfloat(A[6])) for A in data[1:]})
+        return dict({A[0]: _Reservoir(A[0], float(A[1]), float(A[2]), float(A[3]),
+                                      A[4], A[5], float(A[6])) for A in data[1:]})
 
     def _parse_tanks(self, filename, initvolumes):
         data = self._parsecsv(filename)
-        return dict({A[0]: _Tank(A[0], myfloat(A[1]), myfloat(A[2]), myfloat(A[3]),
-                                 myfloat(A[4]), myfloat(A[5]), initvolumes[A[0]],
-                                 myfloat(A[6])) for A in data[1:]})
+        return dict({A[0]: _Tank(A[0], float(A[1]), float(A[2]), float(A[3]), float(A[4]), float(A[5]),
+                                 initvolumes[A[0]], float(A[6])) for A in data[1:]})
 
     def _parse_profiles(self, filename, starttime, endtime, aggsteps):
         data = self._parsecsv(filename)
@@ -664,69 +622,72 @@ class Instance:
         inactive = {t: set((A[0], A[1]) for A in data[1:] if A[t + 2] == '0') for t in self.horizon()}
         return inactive
 
-    def parse_bounds_obbt(self, overwrite: bool = True, obbtlevel: str = "C1"):
-        """Parse bounds in the json file.
-        if 'overwrite', then adjust all the original ones to these;
-        otherwise, adjust these bounds to the original ones."""
-        bndfile = open(Path(Instance.BNDSDIR, self.name, f"{obbtlevel}_{self.nperiods()}.json"), "r")
-        bounds: Dict[str, Dict[str, List[List[float]]]] = json.load(bndfile)
+    def parse_bounds_obbt(self, obbtlevel: str, obbtoverwrite: bool = True):
+        """Parse bounds from the json file and assign them to the network elements.
+        if 'obbtoverwrite', then restrict the original bounds to those, otherwise do the reverse."""
+
+        bndfilename = f"{obbtlevel}_{self.nperiods()}.json"
+        print(f"parse the new OBBT bound file {bndfilename}: overwrite original bounds ? {obbtoverwrite}")
+        try:
+            bndfile = open(Path(Instance.BNDSDIR, self.name, bndfilename), "r")
+        except FileNotFoundError:
+            print(f"No OBBT file {bndfilename} found", file=sys.stderr)
+            return
+
+        bnds: Dict[str, Dict[str, List[List[float]]]] = json.load(bndfile)
         bndfile.close()
 
-        print(f"parse the new OBBT bound file: overwrite original bounds ? {overwrite}")
         for a, arc in self.arcs.items():
             aid = arc.id
-            assert len(bounds[aid]["q"]) == self.nperiods() and len(bounds[aid]["q"][-1]) == 2
-            qmin = min([b[0] for b in bounds[aid]["q"]])
-            qmax = max([b[1] for b in bounds[aid]["q"]])
-            print(f"{a}: [{arc.qmin()}, {arc.qmax()}] -> [{qmin}, {qmax}]")
 
-            if overwrite:
-                arc.setqbounds(bounds[aid]["q"], (qmin, qmax))
-            else:
-                if qmin < arc.qmin() or qmax > arc.qmax():
-                    for t in self.horizon():
-                        if bounds[aid]["q"][t][0] < arc.qmin() or bounds[aid]["q"][t][1] > arc.qmax():
-                            if not arc.control or t not in bounds[aid]["f"][0]:
-                                print(f"error (corrected) in qbounds for ({aid}, {t}): [{arc.qmin()}, {arc.qmax()}] -> "
-                                      f"[{bounds[aid]['q'][t][0]}, {bounds[aid]['q'][t][1]}]", file=sys.stderr)
-                                bounds[aid]['q'][t][0] = max(bounds[aid]['q'][t][0], arc.qmin())
-                                bounds[aid]['q'][t][1] = min(bounds[aid]['q'][t][1], arc.qmax())
-                arc.setqbounds(bounds[aid]["q"], None)
+            assert len(bnds[aid]["q"]) == self.nperiods() and len(bnds[aid]["q"][-1]) == 2
+            qbnds = (min([b[0] for b in bnds[aid]["q"]]), max([b[1] for b in bnds[aid]["q"]]))
+            assert qbnds[0] <= qbnds[1], f"arc {a}: qmin {qbnds[0]} > qmax {qbnds[1]}"
+            if not obbtoverwrite and (qbnds[0] < arc.qmin() or qbnds[1] > arc.qmax()):
+                for t in self.horizon():
+                    if not(arc.control and t in bnds[aid]["f"][0]):
+                        if bnds[aid]["q"][t][0] < arc.qmin():
+                            print(f"adjust qmin({aid}, {t}): {bnds[aid]['q'][t][0]} -> {arc.qmin()} ", file=sys.stderr)
+                            bnds[aid]['q'][t][0] = arc.qmin()
+                        if bnds[aid]["q"][t][1] > arc.qmax():
+                            print(f"adjust qmax({aid}, {t}): {bnds[aid]['q'][t][1]} -> {arc.qmax()} ", file=sys.stderr)
+                            bnds[aid]["q"][t][1] = arc.qmax()
+                qbnds = None
+            arc.setqbounds(bnds[aid]["q"], qbnds)
 
             if arc.control:
-                arc.setfixed(bounds[aid]["f"], self.nperiods())
+                arc.setfixed(bnds[aid]["f"], self.nperiods())
 
-                assert len(bounds[aid]["dh"]) == self.nperiods() and len(bounds[aid]["dh"][0]) == 2
-                dhmin = min([b[0] for b in bounds[aid]["dh"]])
-                dhmax = max([b[1] for b in bounds[aid]["dh"]])
-                print(f"{a}: [{arc.dhminifoff()}, {arc.dhmaxifoff()}] -> [{dhmin}, {dhmax}]")
-                if overwrite:
-                    arc.setdhbounds(bounds[aid]["dh"], (dhmin, dhmax))
-                else:
-                    if dhmin < arc.dhminifoff() or dhmax > arc.dhmaxifoff():
-                        for t in self.horizon():
-                            if bounds[aid]["dh"][t][0] < arc.dhminifoff() or bounds[aid]["dh"][t][1] > arc.dhmaxifoff():
-                                assert arc.isfixedon(t)
-                    arc.setdhbounds(bounds[aid]["dh"], None)
+                assert len(bnds[aid]["dh"]) == self.nperiods() and len(bnds[aid]["dh"][0]) == 2
+                dhbnds = (min([b[0] for b in bnds[aid]["dh"]]), max([b[1] for b in bnds[aid]["dh"]]))
+                if not obbtoverwrite and (dhbnds[0] < arc.dhminifoff() or dhbnds[1] > arc.dhmaxifoff()):
+                    for t in self.horizon():
+                        if not t in bnds[aid]["f"][1]:
+                            if bnds[aid]["dh"][t][0] < arc.dhminifoff():
+                                print(f"adjust dhmin({aid}, {t}): {bnds[aid]['dh'][t][0]} -> {arc.dhminifoff()} ",
+                                      file=sys.stderr)
+                                bnds[aid]['dh'][t][0] = arc.dhminifoff()
+                            if bnds[aid]["dh"][t][1] > arc.dhmaxifoff():
+                                print(f"adjust dhmax({aid}, {t}): {bnds[aid]['dh'][t][1]} -> {arc.dhmaxifoff()} ",
+                                      file=sys.stderr)
+                                bnds[aid]["dh"][t][1] = arc.dhmaxifoff()
+                    dhbnds = None
+                arc.setdhbounds(bnds[aid]["dh"], dhbnds)
 
-        for j, tank in self.tanks.items():
-            tank.setqinbounds(bounds[j]["qin"])
-            assert len(bounds[j]["h"]) == self.nperiods() and len(bounds[j]["h"][0]) == 2
-            bounds[j]["h"].append([tank.head(tank.vinit), tank.head(tank.vmax)])
-            # print(f"H {j}: [{tank.vinit}, {tank.vmax}] [{tank.head(tank.vinit)}, {tank.head(tank.vmax)}]")
-            tank.sethbounds(bounds[j]["h"])
+        for j, tk in self.tanks.items():
+            assert len(bnds[j]["h"]) == self.nperiods() and len(bnds[j]["h"][0]) == 2
+            bnds[j]["h"].append([tk.head(tk.vinit), tk.head(tk.vmax)])
+            tk.sethbounds(bnds[j]["h"])
 
-    def _update_bounds(self):
-        for j, tank in self.tanks.items():
-            for t in self.horizon():
-                tank.update_qinbounds(t,
-                                      max(sum(self.arcs[a].qmin(t) for a in self.inarcs(j))
-                                          - sum(self.arcs[a].qmax(t) for a in self.outarcs(j)),
-                                          (tank.hmin(t+1) - tank.hmax(t)) / self.flowtoheight(tank)),
-                                      min(sum(self.arcs[a].qmax(t) for a in self.inarcs(j))
-                                          - sum(self.arcs[a].qmin(t) for a in self.outarcs(j)),
-                                          (tank.hmax(t+1) - tank.hmin(t)) / self.flowtoheight(tank)))
+            qinbnds = [(max(bnds[j]["qin"][t][0],
+                            sum(self.arcs[a].qmin(t) for a in self.inarcs(j)) - sum(self.arcs[a].qmax(t) for a in self.outarcs(j)),
+                            (tk.hmin(t+1) - tk.hmax(t)) / self.flowtoheight(tk)),
+                        min(bnds[j]["qin"][t][1],
+                            sum(self.arcs[a].qmax(t) for a in self.inarcs(j)) - sum(self.arcs[a].qmin(t) for a in self.outarcs(j)),
+                            (tk.hmax(t+1) - tk.hmin(t)) / self.flowtoheight(tk)))
+                       for t in self.horizon()]
 
+            tk.setqinbounds(qinbnds)
 
     # @todo directly generate this json file
     def format_bounds_obbt(self, obbtlevel: str = "C1"):
@@ -735,11 +696,11 @@ class Instance:
         rep = Path(Instance.BNDSDIR, self.name, f"{obbtlevel}_{self.nperiods()}")
         bndfile = Path(Instance.BNDSDIR, self.name, f"{obbtlevel}_{self.nperiods()}.json")
 
-        zfile = "Bound_flow_arcs.npy"  # arc Q when X=1 + tank Qin
-        cfile = "Bound_flow_tanks.npy"  # tank H (sauf pour t = 0 => vinit ?)
-        dfile = "Bound_h_tanks.npy"  # varc DH when X=0
-        p1file = "Probed1.npy"  # varcs = 0
-        p0file = "Probed0.npy"  # varcs = 1
+        zfile = "Bound_flow_arcs.npy"  # flow/active arc + inflow/tank
+        cfile = "Bound_flow_tanks.npy"  # head loss/inactive arc
+        dfile = "Bound_h_tanks.npy"  # head/tank
+        p1file = "Probed1.npy"  # inactive arcs
+        p0file = "Probed0.npy"  # active arcs
 
         qbounds: Dict = np.load(Path(rep, zfile).as_posix(), allow_pickle=True).tolist()
         hbounds: Dict = np.load(Path(rep, dfile).as_posix(), allow_pickle=True).tolist()
@@ -751,21 +712,20 @@ class Instance:
         bounds = {}
         for a, arc in self.arcs.items():
             aid = arc.id
-            bounds[aid] = {"q": [[myround(qb) for qb in qbounds[(a, t)]] for t in self.horizon()]}
+            bounds[aid] = {"q": [[qb for qb in qbounds[(a, t)]] for t in self.horizon()]}
             if arc.control:
-                bounds[aid]["dh"] = [[myround(dhb) for dhb in dhbounds[(a, t)]] for t in self.horizon()]
+                bounds[aid]["dh"] = [[dhb for dhb in dhbounds[(a, t)]] for t in self.horizon()]
                 bounds[aid]["f"] = [[t for t in self.horizon() if p0arcs.get((a, t))],
                                     [t for t in self.horizon() if p1arcs.get((a, t))]]
+                # set extreme bounds for infeasible cases: for computing min lb and max ub over t
                 for t in bounds[aid]["f"][0]:
-                    bounds[aid]["q"][t][0] = 1e8
-                    bounds[aid]["q"][t][1] = -1e8
+                    bounds[aid]["q"][t] = (1e8, -1e8)
                 for t in bounds[aid]["f"][1]:
-                    bounds[aid]["dh"][t][0] = 1e8
-                    bounds[aid]["dh"][t][1] = -1e8
+                    bounds[aid]["dh"][t] = (1e8, -1e8)
 
         for j, tank in self.tanks.items():
-            bounds[j] = {"qin": [[myround(qb) for qb in qbounds[(j, t)]] for t in self.horizon()],
-                        "h": [[myround(hb) for hb in hbounds[(j, t)]] for t in self.horizon()]}
+            bounds[j] = {"qin": [[qb for qb in qbounds[(j, t)]] for t in self.horizon()],
+                        "h": [[hb for hb in hbounds[(j, t)]] for t in self.horizon()]}
 
         assert len(qbounds) == (len(self.arcs) + len(self.tanks)) * self.nperiods()
         assert len(hbounds) == len(self.tanks) * self.nperiods()

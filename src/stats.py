@@ -11,9 +11,10 @@ from gurobipy import GRB
 class Stat:
     """Statistics for solving one instance."""
 
-    basicfmt = {'ub': 2, 'realub': 2, 'lb': 2, 'gap': 1, 'cpu': 1, 'nodes': 0}
-    bbfmt = {'unfeas': 0, 'feas': 0, 'adjust': 0, 'cpu_cb': 1, 'ub_best': 2, 'cpu_best': 1, 'ub_1st': 2, 'cpu_1st': 1}
-    adjfmt = {'nb_adj': 0, 'ub_adj': 2, 'cpu_adj': 1, 'ub_1st_adj': 2, 'cpu_1st_adj': 1}
+    basicfmt = {'ub': 3, 'realub': 3, 'lb': 3, 'gap': 1, 'cpu': 1, 'nodes': 0}
+    bbfmt = {'unfeas': 0, 'feas': 0, 'adjust': 0, 'cpu_cb': 1,
+             'ub_best': 3, 'cpu_best': 1, 'ub_1st': 3, 'cpu_1st': 1, 'lb00': 3, 'lb0': 3}
+    adjfmt = {'nb_adj': 0, 'ub_adj': 3, 'cpu_adj': 1, 'ub_1st_adj': 3, 'cpu_1st_adj': 1}
 
     def __init__(self, modes):
         self.modes = modes
@@ -28,8 +29,14 @@ class Stat:
     def withadjust(self):
         return self.modes["adjust"] != "NOADJUST"
 
+    def useobbtbounds(self):
+        return self.modes["obbt"] != 'C0'
+
     def getsolvemode(self):
         return self.modes["solve"]
+
+    def getobbtmode(self):
+        return self.modes["obbt"]
 
     def fill(self, model, costreal):
         self.all = {
@@ -40,7 +47,8 @@ class Stat:
             'lb': model.objBound,
             'gap': model.MIPGap * 100,
             'nodes': int(model.NodeCount),
-            'iter': model.IterCount}
+            'iter': model.IterCount
+        }
 
         if not self.solveconvex():
             self.all['ub'] = model._incumbent if model._solutions else float('inf')
@@ -52,6 +60,8 @@ class Stat:
             self.all['cpu_best'] = feassol[-1]['cpu'] if feassol else 0
             self.all['ub_1st'] = feassol[0]['cost'] if feassol else float('inf')
             self.all['cpu_1st'] = feassol[0]['cpu'] if feassol else 0
+            self.all['lb00'] = model._rootlb[0]
+            self.all['lb0'] = model._rootlb[1]
 
         if self.withadjust():
             self.all['nb_adj'] = len(model._adjust_solutions)
@@ -65,8 +75,10 @@ class Stat:
 
     def tocsv_basic(self):
         fmtlst = [str(round(self.all[k], f)) for k, f in self.fmt.items()]
+        fmtlst.append("!".join(self.modes.values()))
         return ", ".join(fmtlst)
 
     def tostr_basic(self):
         fmtlst = [f"{k}: {round(self.all[k], f)}" for k, f in self.fmt.items()]
+        fmtlst.append("!".join(self.modes.values()))
         return ", ".join(fmtlst)

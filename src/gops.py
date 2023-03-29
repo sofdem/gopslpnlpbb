@@ -13,6 +13,7 @@ bounds are read from a file (.hdf)
 from instance import Instance
 from datetime import datetime
 import convexrelaxation as rel
+# import convexrelicae as rel
 import lpnlpbb as bb
 import csv
 import graphic
@@ -58,14 +59,15 @@ FASTBENCH = [
 ]
 
 OUTDIR = Path("../output/")
-defaultfilename = Path(OUTDIR, f'resall.csv')
-SOLFILE = Path(OUTDIR, f'solutions.csv')
+defaultfilename = Path(OUTDIR, 'resall.csv')
+SOLFILE = Path(OUTDIR, 'solutions.csv')
 
-
+# !todo remove RECORD and ADJUST
 # RECORD (default: gurobi manages incumbent), FATHOM (cut feas int nodes) or CVX (MIP relaxation only)
 # NOADJUST (default: no adjustment heuristic), ADJUST (run heur) or ADJUSTNCUT (cut with heur solutions)
 MODES = {"solve": ['RECORD', 'FATHOM', 'CVX'],
-         "adjust": ['NOADJUST', 'ADJUST', 'ADJUSTNCUT']}
+         "adjust": ['NOADJUST', 'ADJUST', 'ADJUSTNCUT'],
+         "obbt": ['C1', 'C0', 'C1icae']}
 
 
 def parsemode(modes):
@@ -89,7 +91,7 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
 
     print("create model")
     cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
-    # cvxmodel.write('convrel.lp')
+    cvxmodel.write('convrel.lp')
     cvxmodel.params.MIPGap = mipgap
     cvxmodel.params.timeLimit = 3600
     # cvxmodel.params.OutputFlag = 0
@@ -104,24 +106,30 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
     print('***********************************************')
     print(f"solution for {instance.tostr_basic()}")
     print(stat.tostr_basic())
-
+    graphic.progress(cvxmodel._trace)
+    cvxmodel.printQuality()
+    cvxmodel.printStats()
     cvxmodel.terminate()
     return costreal, plan
 
 
 def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=True, stat=None, file=defaultfilename):
-    instance = makeinstance(instid)
     stat = Stat(parsemode(modes)) if stat is None else stat
     now = datetime.now().strftime("%y%m%d-%H%M")
     print(now)
+
+    instance = makeinstance(instid)
+    if stat.useobbtbounds():
+        instance.parse_bounds_obbt(obbtlevel=stat.getobbtmode())
+
     cost, plan = solve(instance, oagap, mipgap, drawsolution, stat)
     if cost:
         writeplan(instance, plan, f"{now}, {instid}, {cost},")
     fileexists = os.path.exists(file)
     f = open(file, 'a')
     if not fileexists:
-        f.write(f"date, oagap, mipgap, mode, ntk T day, {stat.tocsv_title()}\n")
-    f.write(f"{now}, {oagap}, {mipgap}, {stat.getsolvemode()}, {instid}, {stat.tocsv_basic()}\n")
+        f.write(f"date, oagap, mipgap, ntk T day, {stat.tocsv_title()}\n")
+    f.write(f"{now}, {oagap}, {mipgap}, {instid}, {stat.tocsv_basic()}\n")
     f.close()
 
 
@@ -150,10 +158,13 @@ def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX',
                                           for a, pump in instance.pumps.items() if a not in inactive[t])
                for t in instance.horizon())
     print(f'real plan cost (without draw cost) = {cost} with {nbviolations} violations')
-    graphic.pumps(instance, flow)
-    graphic.tanks(instance, flow, volume)
+    if drawsolution:
+        graphic.pumps(instance, flow)
+        graphic.tanks(instance, flow, volume)
 
     stat = Stat(parsemode(modes))
+    if stat.useobbtbounds():
+        instance.parse_bounds_obbt(obbtlevel=stat.getobbtmode())
     arcvals = {(a, t): 0 if a in inactive[t] else 1 for a in instance.varcs for t in instance.horizon()}
     solve(instance, oagap, mipgap, drawsolution, stat, arcvals=arcvals)
 
@@ -194,8 +205,8 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
 
 
 #solveinstance('FSD s 24 2', modes='', drawsolution=False)
-solveinstance('RIC s 12 4') #, modes='CVX')
-# testsolution('RIC s 12 1', Path(OUTDIR, "sol.csv"))
+solveinstance('RIC s 12 4', modes='C1icae', drawsolution=False)
+#testsolution('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1icae", drawsolution=False)
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
 # solvebench(FASTBENCH[:7], modes=None)

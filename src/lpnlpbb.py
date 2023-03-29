@@ -16,16 +16,11 @@ import csv
 from pathlib import Path
 
 # every unfeasible integer node X is discarded with a nogood cut: |x-X|>=1
-# RECORDSOL = False:
-# feasible integer nodes are discarded with nogoodcuts too and incumbent/cutoff are updated/checked outside of Gurobi
-# => ObjBound is not a valid lower bound
-# RECORDSOL = True:
-# feasible integer nodes are updated with bound cut: obj >= (realcost-eps) * (1-X)
+# feasible integer nodes are updated with bound cut: obj >= (realcost(X)-eps) * |1-X|
 # which should invalidate the current MILP solution (when its cost is strictly lower than the real feasible solution)
-# the real feasible solution is provided as a heuristic solution to Gurobi
-# Problem 1: Gurobi 9.1 allows to set solutions at MIPNODE but not at MIPSOL
-# so the solution found at MIPSOL must be recorded to be set at the next MIPNODE event
-# Problem 2: even if Gurobi accepts the provided solution, it does not seem to directly update the cutoff value
+# the corresponding MINLP feasible solution is provided as a heuristic solution to Gurobi
+# Gurobi 10.0 now allows to set the solution at MIPSOL but it seems to accept it (useSolution)
+# and update the cutoff value only in a 2nd step (MIPSOL cb called twice at the same node)
 
 OUTDIR = Path("../output/")
 IISFILE = Path(OUTDIR, f'modeliis.ilp').as_posix()
@@ -37,24 +32,109 @@ def _attach_callback_data(model, instance, modes):
     model._network = HydraulicNetwork(instance, model.Params.FeasibilityTol)
 
     model._incumbent = GRB.INFINITY
+    model._rootlb = [0,0]
     model._callbacktime = 0
     model._solutions = []
     model._intnodes = {'unfeas': 0, 'feas': 0, 'adjust': 0}
-
-    model._recordsol = (modes["solve"] == "RECORD")
-
-    if modes["adjust"] != "NOADJUST":
-        print("the primal heuristic based on time period adjustment is currently deactivated !")
-    model._adjustmode = None
-    model._adjusttime = time.time()
-    model._adjust_solutions = []
+    # model._recordsol = (modes["solve"] == "RECORD")
 
     vs = [*model._svar.values(), *model._qvar.values()]
     model._lastsol = {'node': -1, 'cost': GRB.INFINITY, 'vars': vs}
-
-    model._clonemodel = model.copy()
+    model._clonemodel = model.copy() # None
+    model._trace = [] # None
 
 def mycallback(m, where):
+
+    # STOP if UB-LB < tol
+    if where == GRB.Callback.MIP:
+        if m._incumbent - m.cbGet(GRB.Callback.MIP_OBJBND) < m.Params.MIPGap * m._incumbent:
+            print('Stop early - ', m.Params.MIPGap * 100, '% gap achieved')
+            m.terminate()
+
+    # store the lower bound at root node
+    elif where == GRB.Callback.MIPNODE:
+        currentnode = int(m.cbGet(GRB.Callback.MIPNODE_NODCNT))
+        if currentnode == 0:
+            currentlb = m.cbGet(GRB.Callback.MIPNODE_OBJBND)
+            if m._rootlb[0] == 0:
+                m._rootlb[0] = currentlb
+            m._rootlb[1] = currentlb
+            trace_progress(m, m.cbGet(GRB.Callback.RUNTIME), 0, currentlb, None, None, None)
+
+    elif where == GRB.Callback.MIPSOL:
+        costmipsol = m.cbGet(GRB.Callback.MIPSOL_OBJ)
+        bestmipsol = m.cbGet(GRB.Callback.MIPSOL_OBJBST)
+        currentlb = m.cbGet(GRB.Callback.MIPSOL_OBJBND)
+        currentnode = int(m.cbGet(GRB.Callback.MIPSOL_NODCNT))
+        currentphase = int(m.cbGet(GRB.Callback.MIPSOL_PHASE))
+        fstring = f"MIPSOL #{currentnode} P{currentphase}: {costmipsol} [{currentlb:.2f}, " \
+                  f"{'inf' if m._incumbent == GRB.INFINITY else round(m._incumbent, 2)}]"
+
+        # the solver comes with the MINLP solution previously posted (but rejected): pass cb and accept it now
+        if currentnode == m._lastsol['node']:
+            print(f"still in node #{currentnode} with rejected solution {m._lastsol['obj']}: obj={costmipsol}")
+            if costmipsol - m.Params.MIPGap <= m._lastsol['obj'] <= costmipsol + m.Params.MIPGap:
+                print(f"{fstring}\n It is the rejected solution: pass callback and just accept it !!")
+                inactive, activity = getplan(m)
+                assert activity == m._lastsol['plan'], "same cost, but not the same plan"
+                return
+
+        m._starttime = time.time()
+        nogood_lastperiod = m._nperiods
+        costrealsol = GRB.INFINITY
+
+        inactive, activity = getplan(m)
+        qreal, hreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
+
+        # plan X is not feasible for MINLP: cut with a combinatorial nogood |x-X|>=1
+        if violperiod:
+            m._intnodes['unfeas'] += 1
+            nogood_lastperiod = violperiod
+            print(fstring + f" t={violperiod}")
+            addnogoodcut(m, _linearnorm(m._svar, nogood_lastperiod, activity), currentnode)
+
+        # plan X is feasible for MINLP: cut it with obj >= (realcost(X)-eps) * |1-X|
+        else:
+            m._intnodes['feas'] += 1
+            costrealsol = solutioncost(m, activity, qreal)
+            assert costrealsol >= costmipsol - m.Params.MIPGapAbs
+            print(fstring + f" feasible: {costrealsol}")
+
+            # if better, update the incumbent and inject solution to the solver
+            if costrealsol < m._incumbent:
+                m._incumbent = min(m._incumbent, costrealsol)
+                m._solutions.append({'plan': activity, 'cost': costrealsol, 'flows': qreal, 'volumes': vreal,
+                                     'cpu': m.cbGet(GRB.Callback.RUNTIME), 'adjusted': (qreal is None)})
+                gap = (m._incumbent - currentlb) / m._incumbent
+                print(f'UPDATE INCUMBENT gap={gap * 100:.4f}%')
+
+                m.cbSetSolution(m._lastsol['vars'], getrealsol(m, activity, qreal))
+                m._lastsol['node'] = currentnode
+                m._lastsol['obj'] = costrealsol
+                m._lastsol['plan'] = activity
+                m._lastsol['cost'] = m.cbUseSolution()
+                print(f"MIPSOL #{currentnode} oldbest = {bestmipsol} "
+                      f"try set solution: {costrealsol} -> {m._lastsol['cost']}")
+                # gurobi 10.0: solution is always? rejected but the solver recalls it in a second step
+                if m._lastsol['cost'] >= GRB.INFINITY:
+                    print(f"!!!!!!!!!! SOLUTION NOT SET {m._incumbent} !!!!!!!!!!!")
+                else:
+                    print(f"solution accepted: update the cutoff value manually {m._incumbent}")
+                    m._lastsol['node'] = -1
+                    m._lastsol['obj'] = -1
+                    addcutoff(m, (1 - m.Params.MIPGap) * m._incumbent, currentnode)
+
+            linexpr = _linearnorm(m._svar, nogood_lastperiod, activity)
+            # print(f"bound cut {costrealsol}")  # nogood: {str(linexpr)}")
+            addboundcut(m, linexpr, costrealsol, currentnode)
+            # addnogoodcut(m, linexpr, currentnode)
+
+        m._callbacktime += time.time() - m._starttime
+        bestval = m._incumbent if m._incumbent < GRB.INFINITY else None
+        realval = costrealsol if costrealsol < GRB.INFINITY else None
+        trace_progress(m, m.cbGet(GRB.Callback.RUNTIME), currentnode, currentlb, bestval, costmipsol, realval)
+
+def mycallbackrecord(m, where):
 
     # STOP if UB-LB < tol
     if where == GRB.Callback.MIP:
@@ -77,8 +157,13 @@ def mycallback(m, where):
             if objval >= GRB.INFINITY and abs(oldbest-lastcost) > m.Params.MIPGapAbs:
                 cloneandchecksolution(m, m._lastsol['vals'])
                 print("if MILP feasible then the solution must violate a lazy cut")
-        # if not m._rootlb:
-        #    m._rootlb = m.cbGet(GRB.Callback.MIPNODE_OBJBND)
+        if int(m.cbGet(GRB.Callback.MIPNODE_NODCNT)) == 0:
+            currentlb = m.cbGet(GRB.Callback.MIPNODE_OBJBND)
+            if m._rootlb[0] == 0:
+                m._rootlb[0] = currentlb
+            m._rootlb[1] = currentlb
+            trace_progress(m, m.cbGet(GRB.Callback.RUNTIME), 0, currentlb, None, None, None)
+
 
     # at an integer solution
     elif where == GRB.Callback.MIPSOL:
@@ -163,6 +248,14 @@ def mycallback(m, where):
                 addcutoff(m, (1 - m.Params.MIPGap) * m._incumbent, currentnode)
 
         m._callbacktime += time.time() - m._starttime
+        bestval = m._incumbent if m._incumbent < GRB.INFINITY else None
+        realval = costrealsol if costrealsol < GRB.INFINITY else None
+        trace_progress(m, m.cbGet(GRB.Callback.RUNTIME), currentnode, currentlb, bestval, costmipsol, realval)
+
+
+def trace_progress(m, cpu, node, lb, ub, mipval, minlpval):
+    if m._trace != None:
+        m._trace.append([cpu, node, lb, ub, mipval, minlpval])
 
 
 def getrealsol(m, activity, qreal):
@@ -190,7 +283,7 @@ def addnogoodcut(m, linnorm, n):
         m._clonemodel.addConstr(c >= 1, name=f'nogood{n}')
 
 def addboundcut(m, linnorm, costrealsol, n):
-    cost = costrealsol #- m.Params.MIPGapAbs
+    cost = costrealsol - m.Params.MIPGapAbs
     m.cbLazy(m._obj >= cost * (1 - linnorm))
     if m._clonemodel:
         c = clonelinexpr(m, linnorm)
@@ -264,7 +357,7 @@ def lpnlpbb(cvxmodel, instance, modes, drawsolution=True):
         cvxmodel.computeIIS()
         cvxmodel.write(IISFILE)
 
-    if cvxmodel._recordsol and cvxmodel.solcount == 0:
+    if cvxmodel.solcount == 0:
         return 0, {}
 
     print("check gurobi best solution")

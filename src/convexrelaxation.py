@@ -49,30 +49,32 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
         milp.update()
 
         for (i, j), a in inst.arcs.items():
-
+            vid = f'({a.id},{t})' # f'({i},{j},{t})'
             if a.control and a.isfixedoff(t):
-                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, lb=0, ub=0, name=f'x({i},{j},{t})')
-                qvar[(i, j), t] = milp.addVar(lb=0, ub=0, name=f'q({i},{j},{t})')
-                dhvar[(i, j), t] = milp.addVar(lb=0, ub=0, name=f'H({i},{j},{t})')
+                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, lb=0, ub=0, name=f'x{vid}')
+                qvar[(i, j), t] = milp.addVar(lb=0, ub=0, name=f'q{vid}')
+                dhvar[(i, j), t] = milp.addVar(lb=0, ub=0, name=f'H{vid}')
             elif a.control and not a.isfixedon(t):
-                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'x({i},{j},{t})')
+                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, name=f'x{vid}')
                 # q_a=0 if x_a=0 otherwise in [qmin,qmax]
-                qvar[(i, j), t] = milp.addVar(lb=a.qmin(t), ub=a.qmax(t), name=f'q({i},{j},{t})')
-                milp.addConstr(qvar[(i, j), t] <= a.qmaxifon(t) * svar[(i, j), t], name=f'qxup({i},{j},{t})')
-                milp.addConstr(qvar[(i, j), t] >= a.qminifon(t) * svar[(i, j), t], name=f'qxlo({i},{j},{t})')
+                qvar[(i, j), t] = milp.addVar(lb=a.qmin(t), ub=a.qmax(t), name=f'q{vid}')
+                milp.addConstr(qvar[(i, j), t] <= a.qmaxifon(t) * svar[(i, j), t], name=f'qxup{vid}')
+                milp.addConstr(qvar[(i, j), t] >= a.qminifon(t) * svar[(i, j), t], name=f'qxlo{vid}')
                 # dh_a = (h_i - h_j) * x_a
                 lb = min(0, a.hlossval(a.qmin(t)))
                 ub = max(0, a.hlossval(a.qmax(t)))
-                dhvar[(i, j), t] = milp.addVar(lb=lb, ub=ub, name=f'H({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] <= a.hlossval(a.qmaxifon(t)) * svar[(i, j), t], name=f'dhxup({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] >= a.hlossval(a.qminifon(t)) * svar[(i, j), t], name=f'dhxlo({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] <= hvar[i, t] - hvar[j, t] - a.dhminifoff(t) * (1-svar[(i, j), t]), name=f'dhhub({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] >= hvar[i, t] - hvar[j, t] - a.dhmaxifoff(t) * (1-svar[(i, j), t]), name=f'dhhlo({i},{j},{t})')
+                dhvar[(i, j), t] = milp.addVar(lb=lb, ub=ub, name=f'H{vid}')
+                milp.addConstr(dhvar[(i, j), t] <= a.hlossval(a.qmaxifon(t)) * svar[(i, j), t], name=f'dhxup{vid}')
+                milp.addConstr(dhvar[(i, j), t] >= a.hlossval(a.qminifon(t)) * svar[(i, j), t], name=f'dhxlo{vid}')
+                milp.addConstr(dhvar[(i, j), t] <= hvar[i, t] - hvar[j, t] - a.dhminifoff(t) * (1-svar[(i, j), t]),
+                               name=f'dhhub{vid}')
+                milp.addConstr(dhvar[(i, j), t] >= hvar[i, t] - hvar[j, t] - a.dhmaxifoff(t) * (1-svar[(i, j), t]),
+                               name=f'dhhlo{vid}')
             else:
-                qvar[(i, j), t] = milp.addVar(lb=a.qmin(t), ub=a.qmax(t), name=f'q({i},{j},{t})')
-                dhvar[(i, j), t] = milp.addVar(lb=a.hlossval(a.qmin(t)), ub=a.hlossval(a.qmax(t)), name=f'H({i},{j},{t})')
-                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, lb=1, name=f'x({i},{j},{t})')
-                milp.addConstr(dhvar[(i, j), t] == hvar[i, t] - hvar[j, t], name=f'dhh({i},{j},{t})')
+                qvar[(i, j), t] = milp.addVar(lb=a.qmin(t), ub=a.qmax(t), name=f'q{vid}')
+                dhvar[(i, j), t] = milp.addVar(lb=a.hlossval(a.qmin(t)), ub=a.hlossval(a.qmax(t)), name=f'H{vid}')
+                svar[(i, j), t] = milp.addVar(vtype=GRB.BINARY, lb=1, name=f'x{vid}')
+                milp.addConstr(dhvar[(i, j), t] == hvar[i, t] - hvar[j, t], name=f'dhh{vid}')
 
     for j, tank in inst.tanks.items():
         hvar[j, nperiods] = milp.addVar(lb=tank.head(tank.vinit), ub=tank.hmax(nperiods), name=f'ht({j},T)')
@@ -89,7 +91,7 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
             milp.addConstr(qexpr[j, t] == junc.demand(t), name=f'fc({j},{t})')
 
         for j, tank in inst.tanks.items():
-            qjvar[j, t] = milp.addVar(lb=tank.qinmin(t), ub=tank.qinmax(t), name=f'ht({j},{t})')
+            qjvar[j, t] = milp.addVar(lb=tank.qinmin(t), ub=tank.qinmax(t), name=f'qt({j},{t})')
             milp.addConstr(qjvar[j, t] == qexpr[j, t], name=f'fcq({j},{t})')
 
             milp.addConstr(hvar[j, t+1] - hvar[j, t] == inst.flowtoheight(tank) * qjvar[j, t],
@@ -98,26 +100,26 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
     # MAX WITHDRAWAL AT RESERVOIRS
     for j, res in inst.reservoirs.items():
         if res.drawmax:
-            milp.addConstr(res.drawmax >=
-                           inst.flowtovolume() * gp.quicksum(qexpr[j, t] for t in horizon),
+            milp.addConstr(res.drawmax >= inst.flowtovolume() * gp.quicksum(qexpr[j, t] for t in horizon),
                            name=f'w({j})')
 
     # CONVEXIFICATION OF HEAD-FLOW
     for (i, j), arc in inst.arcs.items():
         for t in horizon:
+            vid = f'({i},{j},{t})'
             if not arc.control or not arc.isfixedoff(t):
                 qmin = arc.qminifon(t) if arc.control else arc.qmin(t)
                 qmax = arc.qmaxifon(t) if arc.control else arc.qmax(t)
                 assert qmin <= qmax + inst.feastol, \
-                    f"qmin>=qmax (({i},{j}), {t}) = {qmin} >= {qmax}"
+                    f"qmin>=qmax {vid} : {qmin} >= {qmax}"
                 if qmin < qmax - inst.feastol:
                     cutbelow, cutabove = oa.hlossoa(qmin, qmax,
                                                     arc.hloss, (i, j), oagap, drawgraph=False)
                     x = svar[(i, j), t] if arc.control else 1
                     for n, c in enumerate(cutbelow):
-                        milp.addConstr(dhvar[(i, j), t] >= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpl{n}({i},{j},{t})')
+                        milp.addConstr(dhvar[(i, j), t] >= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpl{n}{vid}')
                     for n, c in enumerate(cutabove):
-                        milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpu{n}({i},{j},{t})')
+                        milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + c[0] * x, name=f'hpu{n}{vid}')
 
     # strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
 
@@ -162,8 +164,8 @@ def strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon
                 outflow = {a: [inst.arcs[a].qmin(t), inst.arcs[a].qmax(t)] for a in inst.outarcs(j)}
                 print(f"inflow: {inflow}")
                 print(f"outflow: {outflow}")
-                lq = max(c * inst.inflowmin(j), l1 - u0)
-                uq = min(c * inst.inflowmax(j), u1 - l0)
+                lq = max(c * tank.qinmin(t), l1 - u0)
+                uq = min(c * tank.qinmax(t), u1 - l0)
                 # refining with a direction indicator variable
                 if withoutz:
                     milp.addConstr(c * hqvar[j, t] >= l0 * (h1 - h0) + lq * (h0 - l0), name=f'hqlo({j},{t})')

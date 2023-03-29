@@ -194,7 +194,7 @@ class HydraulicNetwork:
         for t in range(nperiods):
             flow[t], head[t], errormsg = self._flow_analysis(inactive[t], t, volumes[t], stopatviolation)
             if errormsg:
-                print(f'violation at {t + 1}: {errormsg}')
+                # print(f'violation at {t + 1}: {errormsg}')
                 if stopatviolation:
                     return flow, head, volumes, t + 1
                 nbviolations += 1
@@ -204,13 +204,13 @@ class HydraulicNetwork:
                                     * (sum(flow[t][a] for a in self.instance.inarcs(i))
                                        - sum(flow[t][a] for a in self.instance.outarcs(i)))
                 if volumes[t + 1][i] < tank.vmin - self.feastol:
-                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
+                    # print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmin:.2f}')
                     nbviolations += 1
                     if stopatviolation:
                         return flow, head, volumes, t+1
 
                 elif volumes[t + 1][i] > tank.vmax + self.feastol:
-                    print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}')
+                    # print(f'violation at {t + 1}: capacity tk={i}: {volumes[t + 1][i] - tank.vmax:.2f}')
                     nbviolations += 1
                     if stopatviolation:
                         return flow, head, volumes, t+1
@@ -218,7 +218,7 @@ class HydraulicNetwork:
         head[nperiods] = {}
         for i, tank in self.instance.tanks.items():
             if volumes[nperiods][i] < tank.vinit - self.feastol:
-                print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vmax:.2f}')
+                # print(f'violation at {nperiods}: capacity tk={i}: {volumes[nperiods][i] - tank.vmax:.2f}')
                 nbviolations += 1
                 if stopatviolation:
                     return flow, head, volumes, nperiods
