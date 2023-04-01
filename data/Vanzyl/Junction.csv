@@ -1,0 +1,15 @@
+JUNCTION_ID;X_COORDINATE;Y_COORDINATE;Z_COORDINATE;Water Demand Base;Profile
+ n1              ;0;0;10;0;domestic
+ n10             ;0;0;100;0;domestic
+ n12             ;0;0;100;0;domestic
+ n11             ;0;0;100;0;domestic
+ n13             ;0;0;100;0;domestic
+ n2              ;0;0;10;0;domestic
+ n3              ;0;0;75;0;domestic
+ n361;0;0;100;0;domestic
+ n362;0;0;100;0;domestic
+ n364            ;0;0;100;0;domestic
+ n365            ;0;0;100;0;domestic
+ n5              ;0;0;30;50;domestic
+ n6              ;0;0;30;100;domestic
+ n365A            ;0;0;100;0;domestic
