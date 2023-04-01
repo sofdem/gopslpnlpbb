@@ -7,16 +7,18 @@ Created on Fri Apr  3 11:07:46 2020
 """
 
 import csv
+import math
+
 import pandas as pd
 import datetime as dt
 from pathlib import Path
 
 TARIFF_COLNAME = 'elix'
-ROUND = 6
+TRUNCATION = 10
 
 
 def myround(val: float) -> float:
-    return round(val, ROUND)
+    return round(val, TRUNCATION)
 
 
 def myfloat(val: str) -> float:
@@ -26,7 +28,7 @@ def myfloat(val: str) -> float:
 def update_min(oldlb: float, newlb: float) -> float:
     """Update lower bound only if better: returns max(oldlb, newlb)."""
     if newlb <= oldlb:
-        print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
+        # print(f'do not update min {oldlb:.3f} to {newlb:.3f}')
         return oldlb
     return newlb
 
@@ -34,7 +36,7 @@ def update_min(oldlb: float, newlb: float) -> float:
 def update_max(oldub: float, newub: float) -> float:
     """Update upper bound only if better: returns min(oldub, newub)."""
     if newub >= oldub:
-        print(f'do not update max {oldub:.3f} to {newub:.3f}')
+        # print(f'do not update max {oldub:.3f} to {newub:.3f}')
         return oldub
     return newub
 
@@ -72,6 +74,15 @@ class _Tank(_Node):
     def volume(self, head):
         return (head - self.altitude()) * self.surface
 
+    def checkcapacity(self, vol: float, vminisvinit: bool, tol: float):
+        hgap = (vol - (self.vinit if vminisvinit else self.vmin)) / self.surface
+        if hgap < -tol:
+            return hgap
+        hgap = (vol - self.vmax) / self.surface
+        if hgap > tol:
+            return hgap
+        return 0
+
 
 class _Junction(_Node):
     """Network node of type junction.
@@ -108,6 +119,8 @@ class _Reservoir(_Node):
         assert drawmax == 'NO', "max source withdrawal not completetly supported"
         self.drawmax = None if (drawmax == 'NO') else drawmax
         self.drawcost = drawcost
+        if drawcost != 0:
+            raise "drawcost not yet supported"
         self.profileid = profileid
         self.hprofile = None
         self.heads = None
@@ -123,95 +136,166 @@ class _Reservoir(_Node):
 class _Arc:
     """Generic network arc.
 
-    id      : identifier '(i,j)' with i the start node id, and j the end node id
+    id      : identifier
+    nodes   : (i,j) with i the start node id, and j the end node id
     qmin    : minimum flow value <= q(i,j) (in L/s)
     qmax    : maximum flow value >= q(i,j) (in L/s)
+    hloss   : head loss polynomial function: h(i) - h(j) = sum_n hloss[n] q(i,j)^n (L/s -> m)
+    control : is the arc controllable or not ? (valved pipe or pump)
     """
 
-    def __init__(self, id_, nodes, qmin, qmax):
+    def __init__(self, id_: str, nodes: tuple, qmin: float, qmax: float, hloss: list):
         self.id = id_
         self.nodes = nodes
         self.qmin = qmin
         self.qmax = qmax
+        self.hloss = hloss
+        self.control = False
+
+    def abs_qmin(self) -> float:
+        return self.qmin
+
+    def abs_qmax(self) -> float:
+        return self.qmax
 
     def update_qbounds(self, qmin, qmax):
         self.qmin = update_min(self.qmin, qmin)
         self.qmax = update_max(self.qmax, qmax)
 
+    def check_qbounds(self, q: float, tol: float):
+        gap = q - self.qmin
+        if gap < -tol:
+            return gap
+        gap = q - self.qmax
+        if gap > tol:
+            return gap
+        return 0
+
+    def hlossval(self, q):
+        """Value of the quadratic head loss function at q."""
+        return self.hloss[0] + self.hloss[1] * q + self.hloss[2] * q * abs(q)
+
+    def hlossprimitiveval(self, q):
+        """Value of the primitive of the quadratic head loss function at q."""
+        return self.hloss[0]*q + self.hloss[1] * q * q / 2 + self.hloss[2] * q * q * abs(q) / 3
+
+    def hlossinverseval(self, dh):
+        """Value of the inverse of the quadratic head loss function at dh."""
+        sgn = -1 if self.hloss[0] > dh else 1
+        return sgn * (math.sqrt(self.hloss[1]*self.hloss[1] + 4 * self.hloss[2] * (dh - self.hloss[0]))
+                      - self.hloss[1]) / (2 * self.hloss[2])
+
+    def gval(self, q, dh):
+        """Value of the duality function g at (q,dh)."""
+        q2 = self.hlossinverseval(dh)
+        return self.hlossprimitiveval(q) - self.hlossprimitiveval(q2) + dh*q2
+
+    def hlosstan(self, q):
+        """Tangent line of the head loss function at q: f(q) + f'(q)(x-q)."""
+        return [self.hloss[0] - self.hloss[2] * q * abs(q),
+                self.hloss[1] + 2 * self.hloss[2] * abs(q)]
+
+    def hlosschord(self, q1, q2):
+        """Line intersecting the head loss function at q1 and q2."""
+        c0 = self.hlossval(q1)
+        c1 = (c0 - self.hlossval(q2)) / (q1 - q2)
+        return [c0-c1*q1, c1]
+
+    def nonnull_flow_when_on(self):
+        return False
+
     def __str__(self):
-        return f'{self.id} [{self.qmin}, {self.qmax}]'
+        return f'{self.id} [{self.qmin}, {self.qmax}] {self.hloss}'
 
 
-class _Pipe(_Arc):
-    """Network arc of type pipe.
-
-    hloss   : head loss polynomial function: h(i) - h(j) = sum_n hloss[n] q(i,j)^n (L/s -> m)
+class _ControllableArc(_Arc):
+    """Controllable network arc: valved pipe or pump
+    dhmin   : minimum head loss value when arc is off (valve open or pump off)
+    dhmax   : maximum head loss value when arc is off (valve open or pump off)
     """
 
-    def __init__(self, id_, nodes, hloss, qmin, qmax):
-        _Arc.__init__(self, id_, nodes, qmin, qmax)
-        self.hloss = hloss
+    def __init__(self, id_, nodes, qmin, qmax, hloss, dhmin, dhmax):
+        _Arc.__init__(self, id_, nodes, qmin, qmax, hloss)
+        self.dhmin = dhmin
+        self.dhmax = dhmax
+        self.control = True
+
+    def abs_qmin(self) -> float:
+        return min(0.0, self.qmin)
+
+    def abs_qmax(self) -> float:
+        return max(0.0, self.qmax)
+
+    def update_dhbounds(self, dhmin, dhmax):
+        self.dhmin = update_min(self.dhmin, dhmin)
+        self.dhmax = update_max(self.dhmax, dhmax)
 
     def __str__(self):
-        return f'P{self.id} [{self.qmin}, {self.qmax}] {self.hloss}'
+        return f'{self.id} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}]'
 
 
-class _Valve(_Arc):
-    """Network arc of type valve.
+class _ValvedPipe(_ControllableArc):
+    """Network arc of type pipe + valve.
 
-    type     : 'GV' or 'PRV' or ???
-    hlossmin : minimal head loss <= h(i) - h(j) (in m)
-    hlossmax : maximal head loss >= h(i) - h(j) (in m)
+    valve type     : 'GV' or 'PRV' or 'CV'
     """
-
-    def __init__(self, id_, nodes, type_, hlossmin, hlossmax, qmin, qmax):
-        _Arc.__init__(self, id_, nodes, qmin, qmax)
+    def __init__(self, id_, nodes, type_, dhmin, dhmax, qmin, qmax):
+        _ControllableArc.__init__(self, id_, nodes, qmin, qmax, [], dhmin, dhmax)
         self.type = type_
-        self.hlossmin = hlossmin
-        self.hlossmax = hlossmax
-        if type_ == 'PRV':
+        if type_ != 'GV':
             raise NotImplementedError('pressure reducing valves are not yet supported')
-
-    def update_hbounds(self, dhmin, dhmax):
-        self.hlossmin = update_min(self.hlossmin, dhmin)
-        self.hlossmax = update_max(self.hlossmax, dhmax)
+        self.valve = nodes
+        self.pipe = None
 
     def __str__(self):
-        return f'V{self.id} [{self.qmin}, {self.qmax}] {self.type} [{self.hlossmin}, {self.hlossmax}]'
+        return f'V{self.id} {self.type} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}]'
+
+    def merge_pipe(self, pipe):
+        # print(f'merge valve {self.nodes} + pipe {pipe.nodes}')
+        self.pipe = pipe.nodes
+        assert self.nodes[0] == pipe.nodes[1], f'valve {self.nodes} + pipe {pipe.nodes}'
+        auxnode = self.nodes[0]
+        self.nodes = (pipe.nodes[0], self.nodes[1])
+        self.hloss = pipe.hloss
+        # print(f'valve bounds = [{self.qmin}, {self.qmax}]')
+        # print(f'pipe bounds = [{pipe.qmin}, {pipe.qmax}]')
+        self.update_qbounds(pipe.qmin, pipe.qmax)
+        return auxnode
 
 
-class _Pump(_Arc):
+class _Pump(_ControllableArc):
     """Network arc of type pump.
 
     type    : 'FSD' or 'VSD'
-    hgain   : head gain polynomial function: h(j) - h(i) = sum_n headgain[n]q(i,j)^n (L/s -> m)
     power   : power polynomial function: p = sum_n power[n]q(i,j)^n (L/s -> W)
     """
 
-    def __init__(self, id_, nodes, hgain, power, qmin, qmax, offdhmin, offdhmax, type_):
-        _Arc.__init__(self, id_, nodes, qmin, qmax)
+    def __init__(self, id_, nodes, hloss, power, qmin, qmax, dhmin, dhmax, type_):
+        _ControllableArc.__init__(self, id_, nodes, qmin, qmax, hloss, dhmin, dhmax)
         self.type = type_
-        self.hgain = hgain
         self.power = power
-        self.offdhmin = offdhmin
-        self.offdhmax = offdhmax
         if type_ == 'VSD':
             raise NotImplementedError('variable speed pumps are not yet supported')
-
-    def update_hbounds(self, dhmin, dhmax):
-        self.offdhmin = update_min(self.offdhmin, dhmin)
-        self.offdhmax = update_max(self.offdhmax, dhmax)
 
     def powerval(self, q):
         assert len(self.power) == 2
         return self.power[0] + self.power[1] * q if q else 0
 
+    def nonnull_flow_when_on(self):
+        return True
+
     def __str__(self):
-        return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hgain} {self.power} {self.type} ' \
-               f'[{self.offdhmin}, {self.offdhmax}]'
+        return f'K{self.id} [{self.qmin}, {self.qmax}] {self.hloss} [{self.dhmin}, {self.dhmax}] ' \
+               f'{self.power} {self.type} '
 
 
-# noinspection PyUnresolvedReferences
+def isjunction(node):
+    return isinstance(node, _Junction)
+
+def isreservoir(node):
+    return isinstance(node, _Reservoir)
+
+
 class Instance:
     """Instance of the Pump Scheduling Problem."""
 
@@ -222,13 +306,22 @@ class Instance:
         self.name = name
         self.tanks = self._parse_tanks('Reservoir.csv', self._parse_initvolumes('History_V_0.csv'))
         self.junctions = self._parse_junctions('Junction.csv')
+        print('rightie right')
+        print(self.junctions)
         self.reservoirs = self._parse_reservoirs('Source.csv')
         self.pumps = self._parse_pumps('Pump.csv')
-        self.pipes = self._parse_pipes('Pipe.csv')
-        self.valves = self._parse_valves('Valve_Set.csv')
+        self.fpipes = self._parse_pipes('Pipe.csv')
+        self._valves = self._parse_valves('Valve_Set.csv')
+        self.vpipes = self._merge_pipes_and_valves()
+        
+        print(self._valves)
+        print('then')
+        print(self.vpipes)
 
-        self.arcs = self._getarcs()
-        self.nodes = self._getnodes()
+        self.farcs = self.fpipes
+        self.varcs = {**self.pumps, **self.vpipes}
+        self.arcs = {**self.varcs, **self.farcs}
+        self.nodes = {**self.junctions, **self.tanks, **self.reservoirs}
         self.incidence = self._getincidence()
 
         periods, profiles = self._parse_profiles(f'{profilename}.csv', starttime, endtime, aggregatesteps)
@@ -263,6 +356,24 @@ class Instance:
     def outarcs(self, node):
         return self.incidence[node, 'out']
 
+    def inflowmin(self, node):
+        return (sum(self.arcs[a].abs_qmin() for a in self.inarcs(node))
+                - sum(self.arcs[a].abs_qmax() for a in self.outarcs(node)))
+
+    def inflowmax(self, node):
+        return (sum(self.arcs[a].abs_qmax() for a in self.inarcs(node))
+                - sum(self.arcs[a].abs_qmin() for a in self.outarcs(node)))
+
+    def inflow(self, node, flow):
+        return self.flowtovolume() * (sum(flow[a] for a in self.inarcs(node))
+                                      - sum(flow[a] for a in self.outarcs(node)))
+
+    def flowtoheight(self, tank):
+        return self.tsduration.total_seconds() / tank.surface / 1000  # in m / (L / s)
+
+    def flowtovolume(self):
+        return self.tsduration.total_seconds() / 1000  # in m3` / (L / s)
+
     #  PARSERS
 
     def _parsecsv(self, filename):
@@ -278,22 +389,22 @@ class Instance:
     def _parse_pumps(self, filename):
         data = self._parsecsv(filename)
         return dict({(A[1], A[2]): _Pump(A[0], (A[1], A[2]),
-                                         [myfloat(A[c]) for c in [5, 4, 3]],
+                                         [-myfloat(A[c]) for c in [5, 4, 3]],
                                          [myfloat(A[c]) for c in [7, 6]],
                                          myfloat(A[8]), myfloat(A[9]),
-                                         myfloat(A[11]), myfloat(A[10]),  # !!! inverse Min-Max !
+                                         -myfloat(A[10]), -myfloat(A[11]),
                                          A[12]) for A in data[1:]})
 
     def _parse_valves(self, filename):
         data = self._parsecsv(filename)
-        return dict({(A[1], A[2]): _Valve(A[0], (A[1], A[2]), A[3],
-                                          myfloat(A[4]), myfloat(A[5]),
-                                          myfloat(A[6]), myfloat(A[7])) for A in data[1:]})
+        return dict({(A[1], A[2]): _ValvedPipe(A[0], (A[1], A[2]), A[3],
+                                               myfloat(A[4]), myfloat(A[5]),
+                                               myfloat(A[6]), myfloat(A[7])) for A in data[1:]})
 
     def _parse_pipes(self, filename):
         data = self._parsecsv(filename)
-        return dict({(A[1], A[2]): _Pipe(A[0], (A[1], A[2]), [0, myfloat(A[4]), myfloat(A[3])],
-                                         myfloat(A[5]), myfloat(A[6])) for A in data[1:]})
+        return dict({(A[1], A[2]): _Arc(A[0], (A[1], A[2]), myfloat(A[5]), myfloat(A[6]),
+                                        [0, myfloat(A[4]), myfloat(A[3])]) for A in data[1:]})
 
     def _parse_junctions(self, filename):
         data = self._parsecsv(filename)
@@ -367,36 +478,43 @@ class Instance:
         return duration
 
     # !!! inverse the dh bounds for pumps in the hdf file
-    # !!! do not substract the error margin (1e-2) when lb = 0 (for pumps especially !)
+    # !!! do not substract the error margin  when lb = 0 (for pumps especially !)
     def parse_bounds(self, filename=None):
         """Parse bounds in the hdf file."""
         file = Path(Instance.BNDSDIR, filename if filename else self.name)
         bounds = pd.read_hdf(file.with_suffix('.hdf'), encoding='latin1').to_dict()
-        tol = 1e-6
+        margin = 1e-6
         for i, b in bounds.items():
             a = (i[0][0].replace('Tank ', 'T'), i[0][1].replace('Tank ', 'T'))
-            arc = self.arcs[a]
-            b0 = myround(b[0])
-            b1 = myround(b[1])
+            arc = self.arcs.get(a)
+            if not arc:
+                (a, arc) = [(na, narc) for na, narc in self.vpipes.items() if narc.valve == a or narc.pipe == a][0]
             if i[1] == 'flow':
-                arc.update_qbounds(b0 - tol, b1 + tol)
+                arc.update_qbounds(myround(b[0] - margin), myround(b[1] + margin))
             elif i[1] == 'head':
                 if a in self.pumps:
-                    arc.update_hbounds(b1 - tol, b0 + tol)
+                    arc.update_dhbounds(myround(-b[0] - margin), myround(-b[1] + margin))
                 else:  # if a in self.valves:
-                    arc.update_hbounds(b0 - tol, b1 + tol)
+                    arc.update_dhbounds(myround(b[0] - margin), myround(b[1] + margin))
 
-    def _getarcs(self):
-        arcs = dict(self.pumps)
-        arcs.update(self.valves)
-        arcs.update(self.pipes)
-        return arcs
-
-    def _getnodes(self):
-        nodes = dict(self.junctions)
-        nodes.update(self.tanks)
-        nodes.update(self.reservoirs)
-        return nodes
+    def _merge_pipes_and_valves(self):
+        vpipes = {}
+        for (iv, j), valve in self._valves.items():
+            inpipe = [(i, jv) for (i, jv) in self.fpipes if jv == iv]
+            assert len(inpipe) == 1, f'valve {(iv,j)} is not attached to exactly one pipe: {inpipe}'
+            i = inpipe[0][0]
+            pipe = self.fpipes.pop((i, iv))
+            auxnode = valve.merge_pipe(pipe)
+            print('if yes why')
+            print(auxnode)
+            # print(f'valved pipe {(i, j)} = {valve.pipe} + {valve.valve}')
+            assert self.junctions[auxnode].dmean == 0
+#            if self.name == 'Vanzyl':
+#                pass
+#            else:
+            self.junctions.pop(auxnode)
+            vpipes[(i, j)] = valve
+        return vpipes
 
     def _getincidence(self):
         incidence = {}
@@ -425,6 +543,9 @@ class Instance:
             return [('R1', 'J2'), ('R2', 'J2'), ('R3', 'J2')]
         elif self.name == 'Anytown':
             return [('R1', 'J20'), ('R2', 'J20'), ('R3', 'J20')]
+        
+        elif self.name == 'Vanzyl':
+            return [('n10', 'n11'), ('n12', 'n13')]
         elif self.name == 'Richmond':
             return [('196', '768'), ('209', '766')]
         elif self.name == 'SAUR':
@@ -434,19 +555,25 @@ class Instance:
 
     def _dependencies(self):
         """Return 4 types of control dependencies as a dict of lists of dependent pumps/valves."""
-        dep = {'p1 => p0': set(), 'p0 or p1': set(),
-               'p0 <=> p1 xor p2': set(), 'p1 => not p0': set()}
+        dep = {'p1 => p0': set(), 'p0 xor p1': set(),
+               'p0 = p1 xor p2': set(), 'p1 => not p0': set()}
 
         if self.name == 'Richmond':
-            dep['p1 => p0'].add((('196', '768'), ('209', '766')))
+            # dep['p1 => p0'].add((('196', '768'), ('209', '766'))) already in symmetry
             dep['p1 => p0'].add((('196', '768'), ('175', '186')))
-            dep['p1 => p0'].add((('312b', 'TD'), ('264', '112')))
-            dep['p1 => p0'].add((('264', '112'), ('312b', 'TD')))
+            dep['p1 => p0'].add((('312', 'TD'), ('264', '112')))
+            dep['p1 => p0'].add((('264', '112'), ('312', 'TD')))
 
-            dep['p0 or p1'].add((('201b', '770'), ('196', '768')))
-            dep['p0 or p1'].add((('321b', '312'), ('264', '112')))
+            dep['p0 xor p1'].add((('201', '770'), ('196', '768')))
+            dep['p0 xor p1'].add((('321', '312'), ('264', '112')))
 
-            dep['p0 <=> p1 xor p2'].add((('196', '768'), ('164b', '197'), ('175', '186')))
+            dep['p0 = p1 xor p2'].add((('196', '768'), ('164', '197'), ('175', '186')))
+            
+        elif self.name == 'Vanzyl':
+            dep['p0 = p1 xor p2'].add((('n10', 'n11'), ('n361', 'n365'), ('n362', 'n364')))
+            
+#        elif self.name == 'Vanzyl':
+#            dep['p0 xor p1'].add((('n3', 'n365A'), ('n361', 'n365')))
         else:
             dep = None
 
@@ -456,7 +583,8 @@ class Instance:
         return f'{self.name} {self.periods[0]} {self.horizon()}'
 
     def tostr_network(self):
-        return f'{len(self.pumps)} pumps, {len(self.valves)} valves, {len(self.tanks)} tanks'
+        return f'{len(self.pumps)} pumps, {len(self.vpipes)} valved pipes, {len(self.fpipes)} fixed pipes, ' \
+               f'{len(self.tanks)} tanks'
 
     def print_all(self):
         print(f'{self.tostr_basic()} {self.tostr_network()}')
@@ -465,10 +593,10 @@ class Instance:
             print(i)
             print(str(a))
 
-    def transcript_bounds(self, csvfile):
-        """Parse bounds in the hdf file."""
-        file = Path(Instance.BNDSDIR, self.name)
-        pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
+    # def transcript_bounds(self, csvfile):
+    #    """Parse bounds in the hdf file."""
+    #     file = Path(Instance.BNDSDIR, self.name)
+    #     pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
 
     def parsesolution(self, filename):
         csvfile = open(filename)
@@ -478,3 +606,22 @@ class Instance:
         assert float(data[0][1]) == self.nperiods(), f"different horizons in {data[0]} and {self.tostr_basic()}"
         inactive = {t: set((A[0], A[1]) for A in data[1:] if A[t + 2] == '0') for t in self.horizon()}
         return inactive
+
+    def solutioncost(self, plan, flows):
+        """ Returns the cost of a solution. """
+        return sum(self.eleccost(t) * (pump.power[0] * plan[t][k] + pump.power[1] * flows[t][k])
+                   for k, pump in self.pumps.items() for t in self.horizon())
+
+    def getvolumeprofiles(self, dhprofiles):
+        """ convert height deltas in volumes: from 'dhprofiles[ntanks][nperiods]' to 'vprofiles[nperiods+1][ntanks]' """
+        if (dhprofiles is None) or (len(dhprofiles) != len(self.tanks)):
+            return None
+        assert not {j: len(prof) for j, prof in dhprofiles.items() if len(prof) != self.nperiods()}
+        vprofiles = {0: {j: tank.vinit for j, tank in self.tanks.items()}}
+        hlevel = {j: tank.head(tank.vinit) for j, tank in self.tanks.items()}
+        for t in range(1, self.nperiods() + 1):
+            for j, dhj in dhprofiles.items():
+                hlevel[j] += dhj[t - 1]
+            vprofiles[t] = {j: tank.volume(hlevel[j]) for j, tank in self.tanks.items()}
+        return vprofiles
+

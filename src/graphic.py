@@ -102,7 +102,7 @@ def pumps_step(instance, qnlp):
     plt.show()
 
 
-def tanks(instance, qnlp, volnlp):
+def tanks(instance, qnlp: dict, volnlp: dict):
     fig, axs = plt.subplots(nrows=len(instance.tanks), ncols=1, sharex='all', figsize=(8, len(instance.tanks) * 1.5))
     if len(instance.tanks) == 1:
         axs = [axs]
@@ -128,7 +128,7 @@ def tanks(instance, qnlp, volnlp):
         axs[n].set_yticks([round(mini), 0, round(maxi)])
 
         ax2.append(axs[n].twinx())
-        hwaternlp = [vol[j] / tk.surface for vol in volnlp]
+        hwaternlp = [vol[j] / tk.surface for vol in volnlp.values()]
         ax2[n].plot(instance.periods, hwaternlp, 'DarkOrange', linestyle='-', linewidth=3,
                     label='real water height in $m$')
 
