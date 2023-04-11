@@ -34,7 +34,7 @@ class HydraulicNetwork:
         incidence = {n: set() for n in instance.nodes}
 
         for (i, j), arc in instance.arcs.items():
-            arcs[(i, j)] = [h for h in arc.hloss]
+            arcs[(i, j)] = [h for h in arc.hloss.coeff()]
             incidence[i].add((i, j))
             incidence[j].add((i, j))
 

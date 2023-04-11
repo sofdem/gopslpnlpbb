@@ -77,7 +77,7 @@ def parsemode(modes):
     if modes is None:
         return pm
     elif type(modes) is str:
-        modes = [modes]
+        modes = modes.split(" ")
     for k, mk in MODES.items():
         for mode in mk:
             if mode in modes:
@@ -86,13 +86,17 @@ def parsemode(modes):
     return pm
 
 
-def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
+def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None, varvals=None):
     print('***********************************************')
     print(instance.tostr_basic())
     print(instance.tostr_network())
 
     print("create model")
     cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
+    if varvals:
+        print(f"!!! fixed values !!! {varvals}")
+        rel.postvalues(cvxmodel, varvals)
+
     cvxmodel.write('convrel.lp')
     cvxmodel.params.MIPGap = mipgap
     cvxmodel.params.timeLimit = TIME_LIMIT
@@ -105,15 +109,12 @@ def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None):
         else bb.lpnlpbb(cvxmodel, instance, stat.modes, drawsolution=drawsolution)
 
     stat.fill(cvxmodel, costreal)
-    print('***********************************************')
-    print(f"solution for {instance.tostr_basic()}")
-    print(stat.tostr_basic())
-    graphic.progress(cvxmodel._trace)
+    trace = cvxmodel._trace if not stat.solveconvex() else None
     if costreal:
         cvxmodel.printQuality()
     cvxmodel.printStats()
     cvxmodel.terminate()
-    return costreal, plan
+    return costreal, plan, trace
 
 
 def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=True, stat=None, file=defaultfilename):
@@ -125,7 +126,18 @@ def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution
     if stat.useobbtbounds():
         instance.parse_bounds_obbt(obbtlevel=stat.getobbtmode())
 
-    cost, plan = solve(instance, oagap, mipgap, drawsolution, stat)
+    cost, plan, trace = solve(instance, oagap, mipgap, drawsolution, stat)
+    print('***********************************************')
+    print(f"solution for {instance.tostr_basic()}")
+    print(stat.tostr_basic())
+    if trace:
+        figname = f"{instid}-{now}"
+        plt = graphic.progress(trace, figname)
+        if drawsolution:
+            plt.show()
+        else:
+            plt.savefig(Path(OUTDIR, f"trace-{figname.replace(' ', '')}.png"))
+
     if cost:
         writeplan(instance, plan, f"{now}, {instid}, {cost},")
     fileexists = os.path.exists(file)
@@ -152,11 +164,11 @@ def solvebench(bench, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=Fal
         solveinstance(i, oagap=oagap, mipgap=mipgap, drawsolution=drawsolution, stat=stat, file=resfilename)
 
 
-def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
+def testplan(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
     instance = makeinstance(instid)
     inactive = instance.parsesolution(solfilename)
-    network = NetworkAnalysis(instance, mipgap) if TESTNETANAL \
-        else HydraulicNetwork(instance, feastol=mipgap)
+    network = NetworkAnalysis(instance, mipgap)
+    # network = HydraulicNetwork(instance, feastol=mipgap)
     flow, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
     cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
                                           for a, pump in instance.pumps.items() if a not in inactive[t])
@@ -172,8 +184,29 @@ def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX',
     arcvals = {(a, t): 0 if a in inactive[t] else 1 for a in instance.varcs for t in instance.horizon()}
     solve(instance, oagap, mipgap, drawsolution, stat, arcvals=arcvals)
 
+def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
+    instance = makeinstance(instid)
+    inactive = instance.parsesolution(solfilename)
+    network = NetworkAnalysis(instance, mipgap)
+    flow, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
+    cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
+                                          for a, pump in instance.pumps.items() if a not in inactive[t])
+               for t in instance.horizon())
+    print(f'real plan cost (without draw cost) = {cost} with {nbviolations} violations')
+    if drawsolution:
+        graphic.pumps(instance, flow)
+        graphic.tanks(instance, flow, volume)
 
-def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
+    varvals = {f"q({arc.id},{t})": flow[t][a] for a, arc in instance.arcs.items() for t in instance.horizon()}
+    varvals.update({f"x({instance.arcs[a].id},{t})": 0 if a in inactive[t] else 1 for a in instance.varcs for t in instance.horizon()})
+    stat = Stat(parsemode(modes))
+    if stat.useobbtbounds():
+        instance.parse_bounds_obbt(obbtlevel=stat.getobbtmode())
+
+    solve(instance, oagap, mipgap, drawsolution, stat, varvals=varvals)
+
+
+def testsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
     csvfile = open(solfilename)
     rows = csv.reader(csvfile, delimiter=',')
     data = [[float(x.strip()) for x in row] for row in rows]
@@ -208,9 +241,12 @@ def testfullsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='
         cvxmodel.terminate()
 
 
-#solveinstance('FSD s 24 2', modes='', drawsolution=False)
-solveinstance('RIC s 12 4', modes='C1icae', drawsolution=False)
-# testsolution('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1icae", drawsolution=False)
+solveinstance('FSD s 48 1', modes='C1', drawsolution=False)
+# solveinstance('RIC s 12 4', modes='C1icae', drawsolution=False)
+# testplan('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1", drawsolution=False)
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-# solvebench(FASTBENCH[7:], modes='C1', drawsolution=False)
+# solvebench(FASTBENCH[:7], modes='C1', drawsolution=False)
+
+# ! TODO: problem wit FSD 48 1: feasible solutions are accepted but Gurobi does not update OBJBst after a while.
+# ! TODO: Worse than that: some iterations after finally updating OBJBst,  it does not cutoff one unfeasible MIP sol

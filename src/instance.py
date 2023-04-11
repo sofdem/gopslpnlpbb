@@ -11,6 +11,7 @@ import json
 import math
 from typing import Tuple, Dict, List
 import sys
+from functions import FuncPol
 import decimal
 
 import numpy as np
@@ -22,9 +23,10 @@ TRUNCATION: int = 12
 FEASTOL: float = 10 ** (3-TRUNCATION)
 
 
-# @todo manage rounding values and bounds correctly and uniformly throughout the code
-def myround(value: float, decimals: int = TRUNCATION) -> float:
-    return round(value, decimals)
+# !todo manage rounding values and bounds correctly and uniformly throughout the code
+#def myround(value: float, decimals: int = TRUNCATION) -> float:
+#    return value
+#    return round(value, decimals)
 #    with decimal.localcontext() as ctx:
 #        d = decimal.Decimal(value)
 #        ctx.rounding = decimal.ROUND_DOWN
@@ -87,13 +89,14 @@ class _Tank(_Node):
         self._qinbounds = []
 
     def head(self, volume):
-        return myround(self.altitude() + volume / self.surface)
+        return self.altitude() + volume / self.surface
 
+    #! todo initialize hmin/hmax(t) even if hbounds are not provided (pb at t=T)
     def hmin(self, t: int) -> float:
-        return self._hbounds[t][0] if self._hbounds else self.head(self.vmin)
+        return self._hbounds[t][0] if self._hbounds else self.head(self.vinit) if t == 0 else self.head(self.vmin)
 
     def hmax(self, t: int) -> float:
-        return self._hbounds[t][1] if self._hbounds else self.head(self.vmax)
+        return self._hbounds[t][1] if self._hbounds else self.head(self.vinit) if t == 0 else self.head(self.vmax)
 
     def sethbounds(self, hbounds: list):
         for ht in hbounds:
@@ -111,6 +114,7 @@ class _Tank(_Node):
     def qinmax(self, t: int) -> float:
         return self._qinbounds[t][1] if self._qinbounds else 1e8
 
+    #! todo initialize to vmax-vmin / duration when no dynamic bounds are provided
     def setqinbounds(self, qinbounds: list):
         self._qinbounds = [(roundlb(qt[0]), roundub(qt[1])) for qt in qinbounds]
 
@@ -139,7 +143,7 @@ class _Junction(_Node):
 
     def setprofile(self, profile):
         self.dprofile = profile[self.profileid]
-        self.demands = [myround(self.dmean * p) for p in self.dprofile]
+        self.demands = [self.dmean * p for p in self.dprofile]
 
     def demand(self, t):
         return self.demands[t]
@@ -166,7 +170,7 @@ class _Reservoir(_Node):
 
     def setprofile(self, profile):
         self.hprofile = profile[self.profileid]
-        self.heads = [myround(self.altitude() * p) for p in self.hprofile]
+        self.heads = [self.altitude() * p for p in self.hprofile]
 
     def head(self, t):
         return self.heads[t]
@@ -184,13 +188,13 @@ class _Arc:
     control : is the arc controllable or not ? (valved pipe or pump)
     """
 
-    def __init__(self, id_, nodes: Tuple[str, str], qmin: float, qmax: float, hloss: list):
+    def __init__(self, id_, nodes: Tuple[str, str], qmin: float, qmax: float, hloss: tuple):
         self.id = id_
         self.nodes = nodes
         self._qmin = roundlb(qmin)
         self._qmax = roundub(qmax)
         self._qbounds = []
-        self.hloss = hloss
+        self.hloss = FuncPol(hloss) if hloss else None
         self.control = False
 
     def qmin(self, t: int = -1) -> float:
@@ -218,41 +222,11 @@ class _Arc:
             return gap
         return 0
 
-    def hlossval(self, q):
-        """Value of the quadratic head loss function at q."""
-        return myround(self.hloss[0] + self.hloss[1] * q + self.hloss[2] * q * abs(q))
-
-    def hlossprimitiveval(self, q):
-        """Value of the primitive of the quadratic head loss function at q."""
-        return myround(self.hloss[0]*q + self.hloss[1] * q * q / 2 + self.hloss[2] * q * q * abs(q) / 3)
-
-    def hlossinverseval(self, dh):
-        """Value of the inverse of the quadratic head loss function at dh."""
-        sgn = -1 if self.hloss[0] > dh else 1
-        return myround(sgn * (math.sqrt(self.hloss[1]*self.hloss[1] + 4 * self.hloss[2] * (dh - self.hloss[0]))
-                      - self.hloss[1]) / (2 * self.hloss[2]))
-
-    def gval(self, q, dh):
-        """Value of the duality function g at (q,dh)."""
-        q2 = self.hlossinverseval(dh)
-        return myround(self.hlossprimitiveval(q) - self.hlossprimitiveval(q2) + dh*q2)
-
-    def hlosstan(self, q):
-        """Tangent line of the head loss function at q: f(q) + f'(q)(x-q)."""
-        return (myround(self.hloss[0] - self.hloss[2] * q * abs(q)),
-                myround(self.hloss[1] + 2 * self.hloss[2] * abs(q)))
-
-    def hlosschord(self, q1, q2):
-        """Line intersecting the head loss function at q1 and q2."""
-        c0 = self.hlossval(q1)
-        c1 = (c0 - self.hlossval(q2)) / (q1 - q2)
-        return c0-c1*q1, c1
-
     def nonnull_flow_when_on(self):
         return False
 
     def __str__(self):
-        return f'{self.id} [{self._qmin}, {self._qmax}] {self.hloss}'
+        return f'{self.id}: {self.nodes} [{self._qmin}, {self._qmax}] {self.hloss}'
 
 
 class _ControllableArc(_Arc):
@@ -373,7 +347,7 @@ class _Pump(_ControllableArc):
 
     def powerval(self, q):
         assert len(self.power) == 2
-        return myround(self.power[0] + self.power[1] * q) if q else 0
+        return self.power[0] + self.power[1] * q
 
     def nonnull_flow_when_on(self):
         return True
@@ -480,7 +454,7 @@ class Instance:
     def _parse_pumps(self, filename):
         data = self._parsecsv(filename)
         return dict({(A[1], A[2]): _Pump(A[0], (A[1], A[2]),
-                                         [-float(A[c]) for c in [5, 4, 3]], [float(A[c]) for c in [7, 6]],
+                                         (-float(A[5]), -float(A[4]), -float(A[3])), (float(A[7]), float(A[6])),
                                          float(A[8]), float(A[9]), -float(A[10]), -float(A[11]), A[12])
                      for A in data[1:]})
 
@@ -492,7 +466,7 @@ class Instance:
     def _parse_pipes(self, filename):
         data = self._parsecsv(filename)
         return dict({(A[1], A[2]): _Arc(A[0], (A[1], A[2]), float(A[5]), float(A[6]),
-                                        [0, float(A[4]), float(A[3])]) for A in data[1:]})
+                                        (0, float(A[4]), float(A[3]))) for A in data[1:]})
 
     def _parse_junctions(self, filename):
         data = self._parsecsv(filename)

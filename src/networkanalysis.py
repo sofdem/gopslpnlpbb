@@ -219,7 +219,7 @@ class NetworkAnalysis:
         """
         components = {}
         for k, cck in partition.items():
-            hloss = [instance.arcs[aid].hloss for aid in cck['a']]
+            hloss = [instance.arcs[aid].hloss.coeff() for aid in cck['a']]
             nd0nodes = len([nid for nid in cck['d'] if instance.junctions[nid].dmean == 0])
             nvarcs = len([aid for aid in cck['a'] if aid in instance.varcs])
             components[k] = PotentialNetwork(nd0nodes, nvarcs, hloss, history=HISTORY, **cck)
