@@ -241,12 +241,9 @@ def testsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX'
         cvxmodel.terminate()
 
 
-solveinstance('FSD s 48 1', modes='C1', drawsolution=False)
-# solveinstance('RIC s 12 4', modes='C1icae', drawsolution=False)
+# solveinstance('FSD s 48 1', modes='', drawsolution=False)
+# solveinstance('RIC s 12 4', modes='C1', drawsolution=False)
 # testplan('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1", drawsolution=False)
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-# solvebench(FASTBENCH[:7], modes='C1', drawsolution=False)
-
-# ! TODO: problem wit FSD 48 1: feasible solutions are accepted but Gurobi does not update OBJBst after a while.
-# ! TODO: Worse than that: some iterations after finally updating OBJBst,  it does not cutoff one unfeasible MIP sol
+solvebench(FASTBENCH[:7], modes='C1', drawsolution=False)
