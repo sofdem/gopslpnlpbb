@@ -45,8 +45,12 @@ class FuncPol:
     def inversevalue(self, x):
         """Value of the inverse function at x: f^{-1}(x) = ."""
         sgn = -1 if self.c[0] > x else 1
-        return sgn * (math.sqrt(self.c[1]*self.c[1] + 4 * self.c[2] * (x - self.c[0]))
+        return sgn * (math.sqrt(self.c[1]*self.c[1] + 4 * self.c[2] * abs(x - self.c[0]))
                       - self.c[1]) / (2 * self.c[2])
+
+    def primitiveinversevalue(self, x):
+        """Value of the primitive of the inverse function at x: G(x) = -F(f^{-1}(x)) + x.f^{-1}(x)."""
+        return -self.primitivevalue(self.inversevalue(x)) + x * self.inversevalue(x)
 
     def gval(self, q, x):
         """Value of the duality function g at (q, x)."""
@@ -55,6 +59,40 @@ class FuncPol:
 
     def islinear(self):
         return self.c[2] == 0
+
+    def isquasilinear(self, mipgap: float, qmin: float, qmax: float):
+        if self.islinear():
+            return self.c[0], self.c[1]
+        else:
+            tg = self.tangentfunc((qmax+qmin)/2)
+            if abs(tg[1] * qmin + tg[0] - self.value(qmin)) < mipgap \
+                    and abs(tg[1] * qmax + tg[0] - self.value(qmax)) < mipgap:
+                print(f"function {self} is quasilinear on [{qmin},{qmax}]")
+                return tg
+
+    def gap(self, q, h, qmin, qmax, eps=1e-6):
+        """ return positive gap if on convex side, negative gap if on nonconvex side, and 0 if no violation. """
+        gap = h - self.value(q)
+        qsup = qmax * (1 - sqrt(2))
+        if q < qsup and gap > eps:
+            return gap
+        qinf = qmin * (1 - sqrt(2))
+        if q > qinf and -gap > eps:
+            return -gap
+        if abs(gap) > eps:
+            return -abs(gap)
+        return 0
+
+    def cvxcut(self, q, h, qmin, qmax, eps=1e-6):
+        """ return positive gap if on convex side, negative gap if on nonconvex side, and 0 if no violation. """
+        gap = h - self.value(q)
+        qsup = qmax * (1 - sqrt(2))
+        if q < qsup and gap > eps:
+            return gap, self.tangentfunc(q)
+        qinf = qmin * (1 - sqrt(2))
+        if q > qinf and -gap > eps:
+            return gap, self.tangentfunc(q)
+        return 0, None
 
     def overestimatepwlfunc(self, oagap: float, qmin: float, qmax: float):
         """Compute an overestimate PWL function over [qmin, qmax] at a distance less than oagap.
@@ -110,19 +148,23 @@ class FuncPol:
 
     def drawoa(self, qmin: float, qmax: float, cutbelow: list, cutabove: list, title: str, points=None):
         dq = qmax - qmin
-        qs = np.arange(qmin - dq / 10.0, qmax + dq / 10.0, 0.01)
+        qs = np.linspace(qmin - dq / 10.0, qmax + dq / 10.0, num=50)
         phi = [self.value(q) for q in qs]
+        print(f"{self}: f(qmin)={self.value(qmin)}, f(qmax)={self.value(qmax)}")
 
         plt.figure()
-        plt.title(f'{title}')
+        plt.title(f'{title} below={len(cutbelow)} above={len(cutabove)}')
         plt.plot(qs, phi, linewidth=2, color='r')
         plt.axvline(x=qmin, color='k', linestyle='-', linewidth=2)
         plt.axvline(x=qmax, color='k', linestyle='-', linewidth=2)
 
         for c in cutbelow:
+            print(f"below {c[1]} * q + {c[0]}")
             plt.plot(qs, [c[1] * q + c[0] for q in qs], color='b', linestyle='-')
         for c in cutabove:
+            print(f"above {c[1]} * q + {c[0]}")
             plt.plot(qs, [c[1] * q + c[0] for q in qs], color='DarkOrange', linestyle='-')
+            print([c[1]*q+c[0] - self.value(q) for q in qs])
         plt.axhline(y=0.0, color='k', linestyle='--')
         plt.axvline(x=0.0, color='k', linestyle='--')
 
@@ -140,10 +182,30 @@ class FuncPol:
 
         plt.show()
 
+    def draw_qh(self, qmin: float, qmax: float, title: str, points=None):
+        dq = qmax - qmin
+        qs = np.linspace(qmin - dq / 10.0, qmax + dq / 10.0, num=50)
+        phi = [self.value(q) for q in qs]
+        qh = [q * self.value(q) for q in qs]
+        print(f"{self}: f(qmin)={self.value(qmin)}, f(qmax)={self.value(qmax)}")
+        print(phi)
+        print(qh)
+
+        plt.figure()
+        plt.title(f'{title} phi(q) red and q*phi(q) blue')
+        plt.plot(qs, phi, linewidth=2, color='r')
+        plt.plot(qs, qh, linewidth=2, color='b')
+        plt.axvline(x=qmin, color='k', linestyle='-', linewidth=2)
+        plt.axvline(x=qmax, color='k', linestyle='-', linewidth=2)
+
+        # plt.xlim([qmin - dq / 10.0, qmax + dq / 10.0])
+        # plt.ylim([min(phi), max(phi)])
+        plt.show()
+
     def testoa(self, oagap, qmin, qmax, title):
         cutbelow = self.underestimatepwlfunc(oagap, qmin, qmax)
-        cutabove = self.underestimatepwlfunc(oagap, qmin, qmax)
-        self.drawoa(oagap, qmin, qmax, cutbelow, cutabove, title)
+        cutabove = self.overestimatepwlfunc(oagap, qmin, qmax)
+        self.drawoa(qmin, qmax, cutbelow, cutabove, title)
 
 
 def test():
@@ -155,3 +217,5 @@ def test():
     FuncPol((0.000835, 0)).testoa(oagap, qmin, qmax, 'TestPipe')
 
 
+# FuncPol((101.055222, 0.0, -0.000835)).draw_qh(0, 179, 'Test pump q*phi(q)')
+# FuncPol((0, 0.0344736, 0.0482982912)).draw_qh(-10, 10, 'Test pipe q*phi(q)')

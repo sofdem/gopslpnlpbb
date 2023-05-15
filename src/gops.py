@@ -62,7 +62,7 @@ FASTBENCH = [
 
 OUTDIR = Path("../output/")
 defaultfilename = Path(OUTDIR, 'resall.csv')
-SOLFILE = Path(OUTDIR, 'solutions.csv')
+ALLSOLFILE = Path(OUTDIR, 'solutions.csv')
 
 # !todo remove RECORD and ADJUST
 # RECORD (default: gurobi manages incumbent), FATHOM (cut feas int nodes) or CVX (MIP relaxation only)
@@ -86,15 +86,15 @@ def parsemode(modes):
     return pm
 
 
-def solve(instance, oagap, mipgap, drawsolution, stat, arcvals=None, varvals=None):
+def solve(instance, oagap, mipgap, drawsolution, stat, varvals=None):
     print('***********************************************')
     print(instance.tostr_basic())
     print(instance.tostr_network())
 
     print("create model")
-    cvxmodel = rel.build_model(instance, oagap, arcvals=arcvals)
+    cvxmodel = rel.build_model(instance, oagap)
     if varvals:
-        print(f"!!! fixed values !!! {varvals}")
+        print(f"!!! fixed variables !!! {varvals}")
         rel.postvalues(cvxmodel, varvals)
 
     cvxmodel.write('convrel.lp')
@@ -148,7 +148,7 @@ def solveinstance(instid, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution
     f.close()
 
 
-def writeplan(instance, activity, preamb, solfile=SOLFILE):
+def writeplan(instance, activity, preamb, solfile=ALLSOLFILE):
     assert len(activity) == instance.nperiods() and len(activity[0]) == len(instance.arcs)
     plan = {a: [activity[t][a] for t in instance.horizon()] for a in instance.varcs}
     f = open(solfile, 'a')
@@ -163,12 +163,11 @@ def solvebench(bench, oagap=OA_GAP, mipgap=MIP_GAP, modes=None, drawsolution=Fal
     for i in bench:
         solveinstance(i, oagap=oagap, mipgap=mipgap, drawsolution=drawsolution, stat=stat, file=resfilename)
 
-
-def testplan(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
+def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True, onlyplan=True):
     instance = makeinstance(instid)
-    inactive = instance.parsesolution(solfilename)
+    inactive = instance.parsesolutionplan(solfilename)
     network = NetworkAnalysis(instance, mipgap)
-    # network = HydraulicNetwork(instance, feastol=mipgap)
+    print(f'************ TEST SOLUTION {instid} {solfilename} **********')
     flow, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
     cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
                                           for a, pump in instance.pumps.items() if a not in inactive[t])
@@ -178,32 +177,14 @@ def testplan(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', dra
         graphic.pumps(instance, flow)
         graphic.tanks(instance, flow, volume)
 
+    xqvals = {f"x({arc.id},{t})": 0 if a in inactive[t] else 1 for a, arc in instance.varcs.items() for t in instance.horizon()}
+    if not onlyplan:
+        xqvals.update({f"q({arc.id},{t})": flow[t][a] for a, arc in instance.arcs.items() for t in instance.horizon()})
+
     stat = Stat(parsemode(modes))
     if stat.useobbtbounds():
         instance.parse_bounds_obbt(obbtlevel=stat.getobbtmode())
-    arcvals = {(a, t): 0 if a in inactive[t] else 1 for a in instance.varcs for t in instance.horizon()}
-    solve(instance, oagap, mipgap, drawsolution, stat, arcvals=arcvals)
-
-def testsolution(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
-    instance = makeinstance(instid)
-    inactive = instance.parsesolution(solfilename)
-    network = NetworkAnalysis(instance, mipgap)
-    flow, volume, nbviolations = network.extended_period_analysis(inactive, stopatviolation=False)
-    cost = sum(instance.eleccost(t) * sum(pump.power[0] + pump.power[1] * flow[t][a]
-                                          for a, pump in instance.pumps.items() if a not in inactive[t])
-               for t in instance.horizon())
-    print(f'real plan cost (without draw cost) = {cost} with {nbviolations} violations')
-    if drawsolution:
-        graphic.pumps(instance, flow)
-        graphic.tanks(instance, flow, volume)
-
-    varvals = {f"q({arc.id},{t})": flow[t][a] for a, arc in instance.arcs.items() for t in instance.horizon()}
-    varvals.update({f"x({instance.arcs[a].id},{t})": 0 if a in inactive[t] else 1 for a in instance.varcs for t in instance.horizon()})
-    stat = Stat(parsemode(modes))
-    if stat.useobbtbounds():
-        instance.parse_bounds_obbt(obbtlevel=stat.getobbtmode())
-
-    solve(instance, oagap, mipgap, drawsolution, stat, varvals=varvals)
+    solve(instance, oagap, mipgap, drawsolution, stat, varvals=xqvals)
 
 
 def testsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX', drawsolution=True):
@@ -241,9 +222,9 @@ def testsolutions(instid, solfilename, oagap=OA_GAP, mipgap=MIP_GAP, modes='CVX'
         cvxmodel.terminate()
 
 
-# solveinstance('FSD s 48 1', modes='', drawsolution=False)
-# solveinstance('RIC s 12 4', modes='C1', drawsolution=False)
-# testplan('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="RECORD C1", drawsolution=False)
+# solveinstance('FSD s 48 1', modes='C1', drawsolution=False)
+solveinstance('RIC s 12 4', modes='C1', drawsolution=False)
+# testsolution('RIC s 12 4', Path(OUTDIR, "solric124.csv"), modes="C1", drawsolution=False)
 # testfullsolutions('FSD s 48 4', "solerror.csv", modes="CVX")
 
-solvebench(FASTBENCH[:7], modes='C1', drawsolution=False)
+# solvebench(FASTBENCH[:7], modes='C1', drawsolution=False)

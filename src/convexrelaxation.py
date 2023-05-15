@@ -14,7 +14,7 @@ import datetime as dt
 
 # !!! check round values
 # noinspection PyArgumentList
-def build_model(inst: Instance, oagap: float, arcvals=None):
+def build_model(inst: Instance, oagap: float):
     """Build the convex relaxation gurobi model."""
 
     milp = gp.Model('Pumping_Scheduling')
@@ -113,28 +113,33 @@ def build_model(inst: Instance, oagap: float, arcvals=None):
                 assert qmin <= qmax + inst.feastol, \
                     f"qmin>=qmax {vid} : {qmin} >= {qmax}"
                 if qmin < qmax - inst.feastol:
-                    if a.hloss.islinear():
-                        c = a.hloss.coeff()
-                        assert c[0] == dh0
-                        milp.addConstr(dhvar[(i, j), t] == c[1] * qvar[(i, j), t] + c[0], name=f'hp{vid}')
+                    x = svar[(i, j), t] if a.control else 1
+                    c = a.hloss.isquasilinear(inst.feastol * 1e-2, qmin, qmax)
+                    # TODO h = aq + (b-dh0)x + dh0 gerer les cas où les coeffs sont < feastol ?
+                    if c:
+                        if not a.control or abs(c[0] - dh0) < inst.feastol:
+                            milp.addConstr(dhvar[(i, j), t] == c[1] * qvar[(i, j), t] + c[0],
+                                           name=f'hp{vid}')
+                        else:
+                            milp.addConstr(dhvar[(i, j), t] == c[1] * qvar[(i, j), t] + (c[0]-dh0) * x + dh0,
+                                           name=f'hp{vid}')
                     else:
-                        x = svar[(i, j), t] if a.control else 1
                         cutbelow = a.hloss.underestimatepwlfunc(oagap, qmin, qmax)
                         for n, c in enumerate(cutbelow):
-                            milp.addConstr(dhvar[(i, j), t] >= c[1] * qvar[(i, j), t] + c[0] * x + dh0 * (1 - x),
+                            milp.addConstr(dhvar[(i, j), t] >= c[1] * qvar[(i, j), t] + (c[0]-dh0) * x + dh0,
                                            name=f'hpl{n}{vid}')
                         cutabove = a.hloss.overestimatepwlfunc(oagap, qmin, qmax)
                         for n, c in enumerate(cutabove):
-                            milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + c[0] * x + dh0 * (1 - x),
+                            milp.addConstr(dhvar[(i, j), t] <= c[1] * qvar[(i, j), t] + (c[0]-dh0) * x + dh0,
                                            name=f'hpu{n}{vid}')
-                        # a.hloss.drawoa(qmin, qmax, cutbelow, cutabove, a.name, points=None)
+                        # if vid == "(745,753,0)":
+                            #a.hloss.drawoa(qmin, qmax, cutbelow, cutabove, vid, points=None)
+                            # a.hloss.testoa(oagap, qmin, qmax, vid)
+                            # a.hloss.drawoa(-100, 100, {}, {}, vid, points=None)
 
-    #strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
+    strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon, True)
 
     binarydependencies(inst, milp, ivar, svar, nperiods, horizon)
-
-    if arcvals:
-        postbinarysolution(inst, arcvals, horizon, svar)
 
     obj = gp.quicksum(inst.eleccost(t) * (pump.power[0] * svar[k, t] + pump.power[1] * qvar[k, t])
                       for k, pump in inst.pumps.items() for t in horizon)
@@ -196,8 +201,78 @@ def strongdualityconstraints(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon
             + gp.quicksum(junc.demand(t) * hvar[j, t] for j, junc in inst.junctions.items()) \
             + gp.quicksum(res.head(t) * qexpr[j, t] for j, res in inst.reservoirs.items())
 
-        # OA for the convex function g_a >= Phi_a(q_a) - Phi_a(phi^{-1}(h_a)) + h_a * phi^{-1}(h_a)
-        for (i,j), arc in inst.arcs.items():
+        # OA for g_a(q, h) = Phi_a(q) + Psi_a(h) convex  and g_a(q, h) = q * h on {(q, phi_a(q)), q_a\in R}
+        # let h'=phi_a(q') then g_a >= h' * q_a  + q' * dh_a  - h' * q' * x_a
+        for (i, j), arc in inst.arcs.items():
+            a = (i, j)
+            gvar[a, t] = milp.addVar(lb=-GRB.INFINITY, name=f'g({i},{j},{t})')
+            noacut = 10 if a in inst.pumps else 5
+            for n in range(noacut):
+                qstar = (arc.qmin(t) + arc.qmax(t)) * n / (noacut - 1)
+                milp.addConstr(gvar[a, t] >= arc.hloss.value(qstar) *
+                               (qvar[a, t] - qstar * svar[a, t]) + qstar * dhvar[a, t], name=f'goa{n}({i},{j},{t})')
+
+        milp.addConstr(gp.quicksum(gvar[a, t] for a in inst.arcs) + sdexpr[t] <= milp.Params.MIPGapAbs, name=f'sd({t})')
+
+def sdconstraints2(inst, milp, hvar, qvar, svar, dhvar, qexpr, horizon, withoutz):
+    print("#################  STRONG DUALITY 2: 5 gvar(pipe) + 10 gvar (pump)")
+    ##########################
+    # convexity of q_a * h_a:
+    # let define g[a,t] = q[a,t] * h[a,t] (given that h[a,t] = phi_a(q[a,t])
+    # if s[a,t]=1: g[a,t] coincides with the convex function (q,h) -> Phi_a(q) + Psi_a(h) on {(q,phi_a(q)) | q\in R}
+    # then g[a,t] >= q' * dh[a,t] + h' * q[a,t] - q' * h' * x[a,t] for any (q',h'=phi(q'))
+    # and McCormick:
+    # g[a,t] <= hmin * q[a,t] + qmax * dh[a,t] - hmin * qmax * s[a,t]
+    # g[a,t] <= qmin * dh[a,t] + hmax * q[a,t] - qmin * hmax * s[a,t]
+    ##########################
+    # flow conservation sum_r h_r * q_r = - sum_a h_a * q_a - sum_s h_s * Q_s:
+    # hq[r,t] =
+
+
+    gvar = {}    # arc component:    x_a * (\Phi_a(q_a) - \Phi_a(\phi^{-1}(h_a)) + h_a\phi^{-1}(h_a))
+    sdexpr = {}  # node component:   sum_n (q_n * h_n)
+    hqvar = {}   # tank component:   q_r * h_r
+    for t in horizon:
+
+        # McCormick's envelope of hq_rt = h_rt * q_rt = h_rt * (h_{r,t+1}-h_rt)/c
+        for j, tank in inst.tanks.items():
+            c = inst.flowtoheight(tank)
+            (h0, h1) = (hvar[j, t], hvar[j, t + 1])
+            (l0, l1, u0, u1) = (h0.lb, h1.lb, h0.ub, h1.ub)
+            if l0 == u0:
+                hqvar[j, t] = (h1 - l0) * l0 / c
+            else:
+                hqvar[j, t] = milp.addVar(lb=-GRB.INFINITY, name=f'hqt({j},{t})')
+                # inflow = {a: [inst.arcs[a].qmin(t), inst.arcs[a].qmax(t)] for a in inst.inarcs(j)}
+                # outflow = {a: [inst.arcs[a].qmin(t), inst.arcs[a].qmax(t)] for a in inst.outarcs(j)}
+                # print(f"inflow: {inflow}")
+                # print(f"outflow: {outflow}")
+                lq = max(c * tank.qinmin(t), l1 - u0)
+                uq = min(c * tank.qinmax(t), u1 - l0)
+                # refining with a direction indicator variable
+                if withoutz:
+                    milp.addConstr(c * hqvar[j, t] >= l0 * (h1 - h0) + lq * (h0 - l0), name=f'hqlo({j},{t})')
+                    milp.addConstr(c * hqvar[j, t] >= u0 * (h1 - h0) + uq * (h0 - u0), name=f'hqup({j},{t})')
+                else:
+                    zvar = milp.addVar(vtype=GRB.BINARY, name=f'z({j},{t})')
+                    hzvar = milp.addVar(lb=0, ub=u0, name=f'hz({j},{t})')
+                    milp.addConstr(h1 - h0 <= (u1 - l0) * zvar, name=f'z0up({j},{t})')
+                    milp.addConstr(h1 - h0 >= (l1 - u0) * (1 - zvar), name=f'z0lo({j},{t})')
+                    milp.addConstr(hzvar <= u0 * zvar, name=f'hz1up({j},{t})')
+                    milp.addConstr(hzvar >= l0 * zvar, name=f'hz1lo({j},{t})')
+                    milp.addConstr(hzvar <= h0 - l0 * (1 - zvar), name=f'hz0up({j},{t})')
+                    milp.addConstr(hzvar >= h0 - u0 * (1 - zvar), name=f'hz0lo({j},{t})')
+                    milp.addConstr(c * hqvar[j, t] >= l0 * (h1 - h0) + lq * (hzvar - l0 * zvar), name=f'hqlo({j},{t})')
+                    milp.addConstr(c * hqvar[j, t] >= u0 * (h1 - h0) + uq * (h0 - hzvar - u0 * (1 - zvar)), name=f'hqup({j},{t})')
+
+        # sdexpr[t] = milp.addVar(lb=-GRB.INFINITY, name=f'sd({t})')
+        sdexpr[t] = gp.quicksum(hqvar[j, t] for j in inst.tanks) \
+            + gp.quicksum(junc.demand(t) * hvar[j, t] for j, junc in inst.junctions.items()) \
+            + gp.quicksum(res.head(t) * qexpr[j, t] for j, res in inst.reservoirs.items())
+
+        # OA for g_a(q, h) = Phi_a(q) + Psi_a(h) convex  and g_a(q, h) = q * h on {(q, phi_a(q)), q_a\in R}
+        # let h'=phi_a(q') then g_a >= h' * q_a  + q' * dh_a  - h' * q' * x_a
+        for (i, j), arc in inst.arcs.items():
             a = (i, j)
             gvar[a, t] = milp.addVar(lb=-GRB.INFINITY, name=f'g({i},{j},{t})')
             noacut = 10 if a in inst.pumps else 5

@@ -40,6 +40,8 @@ def _attach_callback_data(model, instance):
     model._solvars = [*model._svar.values(), *model._qvar.values()]
     model._clonemodel = None  # model.copy()
 
+    model._ncvxcuts = 100
+
     model._incumbent = GRB.INFINITY
     model._callbacktime = 0
     model._solutions = []
@@ -64,6 +66,7 @@ def mycallback(m, where):
                 m._rootlb[0] = currentlb
             m._rootlb[1] = currentlb
             trace_progress(m._trace, m.cbGet(GRB.Callback.RUNTIME), 0, currentlb, GRB.INFINITY, None, GRB.INFINITY)
+            cutcvxviolations(m, where)
 
     elif where == GRB.Callback.MIPSOL:
 
@@ -75,7 +78,7 @@ def mycallback(m, where):
                   f"{'inf' if m._incumbent == GRB.INFINITY else round(m._incumbent, 2)}]"
 
         # at same node AND  same integer solution than the last best known MINLP solution: pass callback
-        if m._solutions and currentnode == m._solutions[-1]['node'] and sameplan(m, m._solutions[-1]['plan']):
+        if m._solutions and currentnode == m._solutions[-1]['node'] and sameplan(m, m._solutions[-1]['plan'], where):
             print(f"pass CB: {fstring} same plan as stored {m._incumbent}")
             assert abs(costmip - m._incumbent) < m.Params.MIPGap
             return
@@ -86,10 +89,12 @@ def mycallback(m, where):
             #    print(f"{mystr} same cost (inc={m._incumbent})")
             #    return
 
+        # computesdviolations(m, where)
+
         # check MINLP feasibility and compute the actual plan cost
         m._starttime = time.time()
         costreal = GRB.INFINITY
-        inactive, activity = getplan(m)
+        inactive, activity = getplan(m, where)
         qreal, vreal, violperiod = m._network.extended_period_analysis(inactive, stopatviolation=True)
 
         # plan X is not feasible for MINLP: forbid the node with a combinatorial nogood cut: |x-X|>=1
@@ -97,6 +102,11 @@ def mycallback(m, where):
             m._intnodes['unfeas'] += 1
             print(fstring + f" t={violperiod}")
             addnogoodcut(m, _linearnorm(m._svar, activity, violperiod), currentnode)
+            # todo a more flexible policy
+            if m._ncvxcuts > 0 or m._incumbent - costmip < 1e-1:
+                ncuts = cutcvxviolations(m, where)
+                if ncuts < 5:
+                    m._ncvxcuts -= 1
 
         # plan X is feasible for MINLP: enforce the bound with: obj >= (realcost(X)-tol) * (1-|x-X|)
         else:
@@ -147,11 +157,11 @@ def getminlpsol(m, activity, qreal):
     return [*solx, *solq]
 
 
-def getplan(m, cb=True):
+def getplan(m, where):
     inactive = {t: set() for t in range(m._nperiods)}
     activity = {t: {} for t in range(m._nperiods)}
     for (a, t), svar in m._svar.items():
-        if getval(m, svar, cb) < 0.5:
+        if getval(m, svar, where) < 0.5:
             inactive[t].add(a)
             activity[t][a] = 0
         else:
@@ -159,13 +169,15 @@ def getplan(m, cb=True):
     return inactive, activity
 
 
-def getval(m, svar, cb):
-    return m.cbGetSolution(svar) if cb else svar.x
+def getval(m, svar, where):
+    return m.cbGetSolution(svar) if where == GRB.Callback.MIPSOL \
+        else m.cbGetNodeRel(svar) if where == GRB.Callback.MIPNODE\
+        else svar.x
 
 
-def sameplan(m, activity):
+def sameplan(m, activity, where):
     for (a, t), svar in m._svar.items():
-        sval = getval(m, svar, cb=True)
+        sval = getval(m, svar, where)
         if activity[t][a]:
             if sval < 0.5:
                 print(f"not same plan ! x[{t}][{a}]: {sval} != {activity[t][a]}")
@@ -293,7 +305,7 @@ def solveconvex(cvxmodel, instance, drawsolution=True):
     plan = {}
     if cvxmodel.SolCount:
         cvxmodel._nperiods = instance.horizon()
-        inactive, activity = getplan(cvxmodel, cb=False)
+        inactive, activity = getplan(cvxmodel, where=False)
         net = HydraulicNetwork(instance, cvxmodel.Params.FeasibilityTol)
         qreal, vreal, nbviolations = net.extended_period_analysis(inactive, stopatviolation=False)
         print(f"real plan with {nbviolations} violations")
@@ -329,3 +341,70 @@ def cloneandchecksolution(m, vals):
         model.computeIIS()
         model.write(IISFILE)
     model.terminate()
+
+def computecvxviolations(m, where, eps=1e-6):
+    cvxviolations = {}
+    noncvxviolations = {}
+    for (ij, t), svar in m._svar.items():
+        x = getval(m, svar, where)
+        if x > 0.5:
+            h = getval(m, m._dhvar[(ij, t)], where)
+            q = getval(m, m._qvar[(ij, t)], where)
+            a = m._instance.arcs[ij]
+            qmin = a.qminifon(t) if a.control else a.qmin(t)
+            qmax = a.qmaxifon(t) if a.control else a.qmax(t)
+            gap = a.hloss.gap(q, h, qmin, qmax, eps)
+            if gap > 0:
+                cvxviolations[(ij, t)] = gap
+            elif gap < 0:
+                noncvxviolations[(ij, t)] = -gap
+    ncvx = len(cvxviolations)
+    meangap = sum(cvxviolations.values()) / ncvx
+    maxgap = max(cvxviolations.values())
+    setarcs = set(key[0] for key in cvxviolations.keys())
+    settimes = set(key[1] for key in cvxviolations.keys())
+    print(f"violations: {ncvx} cvx ({len(noncvxviolations)} non-cvx), "
+          f"meangap={meangap}, maxgap={maxgap}, uniquearcs={len(setarcs)}, uniquetimes={len(settimes)}")
+
+def cutcvxviolations(m, where, eps=1e-4):
+    cvxviolations = {}
+    for (ij, t), svar in m._svar.items():
+        x = getval(m, svar, where)
+        if x > 0.5:
+            h = getval(m, m._dhvar[(ij, t)], where)
+            q = getval(m, m._qvar[(ij, t)], where)
+            a = m._instance.arcs[ij]
+            qmin = a.qminifon(t) if a.control else a.qmin(t)
+            qmax = a.qmaxifon(t) if a.control else a.qmax(t)
+            gap, cut = a.hloss.cvxcut(q, h, qmin, qmax, eps)
+            xvar = m._svar[ij, t] if a.control else 1
+            dh0 = a.hloss.value(0)
+            if gap > 0:
+                m.cbLazy(m._dhvar[ij, t] <= cut[1] * m._qvar[ij, t] + (cut[0]-dh0) * xvar + dh0)
+                cvxviolations[(ij, t)] = gap
+            elif gap < 0:
+                m.cbLazy(m._dhvar[ij, t] >= cut[1] * m._qvar[ij, t] + (cut[0]-dh0) * xvar + dh0)
+                cvxviolations[(ij, t)] = -gap
+    ncvx = len(cvxviolations)
+    if ncvx:
+        meangap = sum(cvxviolations.values()) / ncvx if ncvx else 0
+        maxgap = max(cvxviolations.values()) if ncvx else 0
+        setarcs = set(key[0] for key in cvxviolations.keys())
+        settimes = set(key[1] for key in cvxviolations.keys())
+        print(f"violations: {ncvx} cvx "
+              f"meangap={meangap}, maxgap={maxgap}, uniquearcs={len(setarcs)}, uniquetimes={len(settimes)}")
+    return ncvx
+
+def computesdviolations(m, where, eps=1e-6):
+    sd = [0 for t in range(m._nperiods)]
+    for (ij, t), svar in m._svar.items():
+        x = getval(m, svar, where)
+        if x > 0.5:
+            h = getval(m, m._dhvar[(ij, t)], where)
+            q = getval(m, m._qvar[(ij, t)], where)
+            a = m._instance.arcs[ij]
+            sd[t] += a.hloss.primitivevalue(q) + a.hloss.primitiveinversevalue(h) - h*q
+    sdv = {t: sd[t] for t in range(m._nperiods) if sd[t] > eps}
+    print(f"sd violation: {sdv}")
+
+# todo getplan/setsolution:  parcourir seulement les éléments non-fixés

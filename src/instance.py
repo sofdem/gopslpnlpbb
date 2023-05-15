@@ -624,7 +624,7 @@ class Instance:
     #     file = Path(Instance.BNDSDIR, self.name)
     #     pd.read_hdf(file.with_suffix('.hdf')).to_csv(csvfile)
 
-    def parsesolution(self, filename):
+    def parsesolutionplan(self, filename):
         csvfile = open(filename)
         rows = csv.reader(csvfile, delimiter=',')
         data = [[x.strip() for x in row] for row in rows]
