@@ -7,3 +7,7 @@ One of the significant challenges in research and development regarding pump sch
 The van Zyl water distribution network is characterized by two symmetrical pumps, a boost pump operating parallel to a check valve, and two tanks possessing disparate capacities.
 
 Furthermore, we have generated a substantial amount of new instances, each featuring unique tariff and demand profiles. The tariff profiles are based on Belgian spot market data, while the demand profiles are drawn from real consumption data sourced from a network in Brittany. This extensive generation of instances should provide a richer basis for testing and developing optimization techniques and heuristics in pump scheduling.
+
+The generated data related to water consumtion during 10 days is depiced as below: 
+![image](https://github.com/sofdem/gopslpnlpbb/assets/82046441/42971034-9eb6-4aa0-99b8-68a1903beb49)
+
