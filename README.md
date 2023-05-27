@@ -10,9 +10,12 @@ Furthermore, we have generated a substantial amount of new instances, each featu
 
 The generated data related to water consumtion during 10 days is depiced as below: 
 ![image](https://github.com/sofdem/gopslpnlpbb/assets/82046441/42971034-9eb6-4aa0-99b8-68a1903beb49)
+<br>
 
 and the trend during a year 2012:
+
+<br>
+
 ![image](https://github.com/sofdem/gopslpnlpbb/assets/82046441/14194115-eed9-48d4-9e65-4cf6e92c0216)
 
-which shows the higher consumption during summer
 
